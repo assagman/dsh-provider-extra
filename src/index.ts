@@ -56,6 +56,7 @@ import {
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
 import type { LoginChoice, LoginCommandHost } from './login-command.ts'
+import { PendingCredentialStore, proveApiKey } from './login-verify.ts'
 
 /** Settings namespace configuration surfaces address this plugin's section by. */
 const SETTINGS_NS = 'dsh-provider-extra'
@@ -275,11 +276,23 @@ export function apply(ctx: Context, config: Config): void {
         choices: loginChoices,
         login: async (choice, interaction) => {
           const credentials = () => ctx.get('credentials') as CodexCredentialService | undefined
-          const models = createModels(codexAuth(credentials))
+          const auth = codexAuth(credentials)
+          const models = createModels(auth)
           // pi-ai's collection starts empty: the catalog provider carrying the
           // login implementation has to be handed to it before the flow runs.
           models.setProvider(catalogLoginProvider(choice.providerId))
-          await models.login(choice.providerId, choice.authType, interaction)
+          if (choice.authType !== 'api_key') {
+            await models.login(choice.providerId, choice.authType, interaction)
+            return
+          }
+          // A grant the provider minted proves itself, but a key proves nothing
+          // until a request carries it, so the key is spent from a store that
+          // forgets and the profile hears of it only once it has been accepted.
+          const pending = createModels({ credentials: new PendingCredentialStore(), authContext: auth.authContext })
+          pending.setProvider(catalogLoginProvider(choice.providerId))
+          const credential = await pending.login(choice.providerId, choice.authType, interaction)
+          await proveApiKey(pending, choice.providerId)
+          await auth.credentials.modify(choice.providerId, async () => credential)
         },
         stored: async (providerId) => {
           const credentials = ctx.get('credentials') as CodexCredentialService | undefined
