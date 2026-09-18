@@ -22,6 +22,7 @@ import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import { renderEvent } from './codex-login.ts'
+import type { RouteDeclaration } from './login-route.ts'
 
 /** Command name a profile gets unless it renames the command. */
 export const DEFAULT_LOGIN_COMMAND_NAME = 'dsh-provider-extra-login'
@@ -55,6 +56,23 @@ const SECRET_DETAIL = 'The value is stored in your credential store and sent onl
 /** Guidance added to a page or device-code question, where waiting is the task. */
 const WAIT_DETAIL = 'Finish on that page, then choose Done. The sign-in completes by itself.'
 
+/**
+ * Said when the sign-in had to declare the route. The settings file grew an
+ * entry on the human's behalf, and a configuration change they did not make is
+ * one they must hear about.
+ */
+const DECLARED_ROUTE_NOTICE = ' The provider was added to the llm-pi-ai settings, so its models work now.'
+
+/** Said when a configured route already carried the sign-in. */
+const PRESENT_ROUTE_NOTICE = ' The credential is stored and the route reads it on its next request.'
+
+/**
+ * Said when nothing here can serve the provider. A stored credential with no
+ * route is the state that later fails a turn, so the failure belongs to the
+ * sign-in that caused it rather than to a model request the human cannot explain.
+ */
+const UNAVAILABLE_ROUTE_NOTICE = ' Nothing in this composition serves its models: mount an llm-pi-ai service to use them.'
+
 /** Upper bound on one attended attempt, longer than any device code lives. */
 const ATTEMPT_DEADLINE_MS = 15 * 60_000
 
@@ -77,8 +95,8 @@ export interface LoginChoice {
 export interface LoginCommandHost {
   /** Every provider in this composition that offers an interactive sign-in. */
   choices(): readonly LoginChoice[]
-  /** Run one sign-in to completion; the credential commit happens inside. */
-  login(choice: LoginChoice, interaction: AuthInteraction): Promise<void>
+  /** Run one sign-in to completion; the credential commit and its route declaration happen inside. */
+  login(choice: LoginChoice, interaction: AuthInteraction): Promise<RouteDeclaration>
   /** The stored credential kind for one provider, absent when nothing is stored. */
   stored(providerId: string): Promise<LoginAuthType | undefined>
   /** Ask the session UI, a surface that may be missing in headless compositions. */
@@ -337,6 +355,14 @@ function attemptInteraction(
   }
 }
 
+/** What one finished sign-in means, said in terms of whether its models can be reached. */
+function successText(choice: LoginChoice, route: RouteDeclaration): string {
+  const signedIn = 'Signed in to ' + choice.providerName + ' (' + choice.methodLabel + ').'
+  if (route === 'declared') return signedIn + DECLARED_ROUTE_NOTICE
+  if (route === 'unavailable') return signedIn + UNAVAILABLE_ROUTE_NOTICE
+  return signedIn + PRESENT_ROUTE_NOTICE
+}
+
 /** Why one attempt ended without a credential, as the human should read it. */
 function describeFailure(error: unknown, attempt: Attempt, choice: LoginChoice): string {
   if (attempt.declined) return 'The ' + choice.providerName + ' sign-in was cancelled.'
@@ -358,7 +384,7 @@ async function runChoice(
   }, ATTEMPT_DEADLINE_MS)
   if (typeof deadline === 'object') deadline.unref()
   try {
-    await host.login(choice, attemptInteraction(host, invocation, choice, attempt))
+    const route = await host.login(choice, attemptInteraction(host, invocation, choice, attempt))
     await closeWait(attempt)
     // pi-ai persists during login, so resolving is not yet proof: only a
     // record read back is. A flow that resolves without one is a catalog bug
@@ -370,11 +396,7 @@ async function runChoice(
         text: 'The ' + choice.providerName + ' sign-in reported success but stored no credential; nothing changed.',
       }
     }
-    return {
-      kind: 'success',
-      text: 'Signed in to ' + choice.providerName + ' (' + choice.methodLabel + ').'
-        + ' The credential is stored and the route reads it on its next request.',
-    }
+    return { kind: 'success', text: successText(choice, route) }
   } catch (error) {
     return { kind: 'error', text: describeFailure(error, attempt, choice) }
   } finally {

@@ -56,6 +56,7 @@ import {
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
 import type { LoginChoice, LoginCommandHost } from './login-command.ts'
+import { declareProviderRoute } from './login-route.ts'
 import { PendingCredentialStore, proveApiKey } from './login-verify.ts'
 
 /** Settings namespace configuration surfaces address this plugin's section by. */
@@ -283,7 +284,7 @@ export function apply(ctx: Context, config: Config): void {
           models.setProvider(catalogLoginProvider(choice.providerId))
           if (choice.authType !== 'api_key') {
             await models.login(choice.providerId, choice.authType, interaction)
-            return
+            return await declareProviderRoute(ctx.get('settings'), choice.providerId)
           }
           // A grant the provider minted proves itself, but a key proves nothing
           // until a request carries it, so the key is spent from a store that
@@ -293,6 +294,9 @@ export function apply(ctx: Context, config: Config): void {
           const credential = await pending.login(choice.providerId, choice.authType, interaction)
           await proveApiKey(pending, choice.providerId)
           await auth.credentials.modify(choice.providerId, async () => credential)
+          // The credential is only reachable through a declared route, so the
+          // sign-in is not finished until one exists.
+          return await declareProviderRoute(ctx.get('settings'), choice.providerId)
         },
         stored: async (providerId) => {
           const credentials = ctx.get('credentials') as CodexCredentialService | undefined

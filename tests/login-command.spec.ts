@@ -12,6 +12,7 @@ import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from '../src/login-command.ts'
 import type { LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-command.ts'
+import type { RouteDeclaration } from '../src/login-route.ts'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 
 /** The registry knows the agent contract; deriving it keeps this suite free of a host dependency. */
@@ -110,6 +111,8 @@ function makeHost(ui: FakeUi, options: {
   stored?: Map<string, LoginAuthType>
   /** A flow that resolves without persisting is the case the command must catch. */
   persist?: boolean
+  /** What the route declaration found, so each notice can be asserted. */
+  route?: RouteDeclaration
 } = {}): { host: LoginCommandHost; logins: LoginChoice[]; stored: Map<string, LoginAuthType> } {
   const logins: LoginChoice[] = []
   const stored = options.stored ?? new Map<string, LoginAuthType>()
@@ -120,6 +123,7 @@ function makeHost(ui: FakeUi, options: {
       logins.push(choice)
       if (options.login !== undefined) await options.login(choice, interaction)
       if (persist) stored.set(choice.providerId, choice.authType)
+      return options.route ?? 'present'
     },
     stored: async (providerId) => stored.get(providerId),
     ask: ui.ask,
@@ -147,6 +151,20 @@ describe('provider sign-in command', () => {
     assert.match(result.kind === 'success' ? result.text ?? '' : '', /Signed in to ChatGPT \(Codex\)/)
     assert.deepEqual(logins.map(choice => [choice.providerId, choice.authType]), [['openai-codex', 'oauth']])
     assert.equal(stored.get('openai-codex'), 'oauth')
+  })
+
+  it('says when the sign-in had to declare the route, because the settings file changed for them', async () => {
+    const ui = new FakeUi([pickerLabel(new FakeUi([]), 'ChatGPT (Codex)')])
+    const { host } = makeHost(ui, { route: 'declared' })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
+    assert.match(result.kind === 'success' ? result.text ?? '' : '', /added to the llm-pi-ai settings/)
+  })
+
+  it('says when nothing can serve the provider instead of promising a route', async () => {
+    const ui = new FakeUi([pickerLabel(new FakeUi([]), 'ChatGPT (Codex)')])
+    const { host } = makeHost(ui, { route: 'unavailable' })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
+    assert.match(result.kind === 'success' ? result.text ?? '' : '', /mount an llm-pi-ai service/)
   })
 
   it('disambiguates a provider that offers both a subscription and a key, naming each method once', async () => {
