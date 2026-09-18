@@ -238,7 +238,7 @@ describe('provider sign-in command', () => {
     const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('anthropic key'))
     assert.equal(result.kind, 'success', result.kind === 'error' ? result.text : '')
     assert.deepEqual(answered, ['sk-test-key'])
-    assert.match(ui.questions[0]?.detail ?? '', /never sent to the model/)
+    assert.match(ui.questions[0]?.detail ?? '', /sent only to this provider/)
   })
 
   it('lets a browser callback win the manual-code race', async () => {

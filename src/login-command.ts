@@ -45,11 +45,12 @@ const DONE_LABEL = 'Done'
 const CANCEL_LABEL = 'Cancel'
 
 /**
- * Caveat rendered with a secret prompt. The answer returns to this handler
- * and never enters the model's context, but a session UI can only show what
- * the human types: saying so is the difference between a choice and a trap.
+ * Caveat rendered with a secret prompt. The answer reaches the provider that
+ * issued the key and the credential store, never the model's context, but a
+ * session UI can only show what the human types: saying so is the difference
+ * between a choice and a trap.
  */
-const SECRET_DETAIL = 'The value goes to this command only and is never sent to the model.'
+const SECRET_DETAIL = 'The value is stored in your credential store and sent only to this provider to be checked.'
 
 /** Guidance added to a page or device-code question, where waiting is the task. */
 const WAIT_DETAIL = 'Finish on that page, then choose Done. The sign-in completes by itself.'
