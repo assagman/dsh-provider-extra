@@ -74,11 +74,15 @@
     "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1 <0.1.6",
     "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.5-rc.1 <0.1.6",
     "@deepseek-ai/dsh-settings": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/dsh-user-questions": ">=0.1.5-rc.1 <0.1.6",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@earendil-works/pi-ai": "^0.85.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-user-questions": {
       "optional": true
     }
   },
@@ -91,6 +95,7 @@
     "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
     "@deepseek-ai/dsh-llm-pi-ai": "0.1.5-rc.2",
     "@deepseek-ai/dsh-settings": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-user-questions": "0.1.5-rc.2",
     "@deepseek-ai/schemastery": "3.18.2",
     "@earendil-works/pi-ai": "0.85.1",
     "@types/node": "22.20.0",

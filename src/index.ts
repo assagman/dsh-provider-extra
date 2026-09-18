@@ -21,7 +21,7 @@
  *         # routeId: opencode-go        # default; keep it out of llm-pi-ai providers
  *         # baseURL: https://opencode.ai/zen/go/v1
  *         # fallbackSessionId: dsh-provider-extra
- *         # codexEnabled: true          # sign in with: dsh-provider-extra-login
+ *         # codexEnabled: true          # sign in with: /dsh-provider-extra-login
  *         # codexRouteId: openai-codex  # default; keep it out of llm-pi-ai providers
  *
  * @module dsh-provider-extra
@@ -34,7 +34,10 @@ import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { LlmError, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-user-questions'
 import { createModels } from '@earendil-works/pi-ai'
+import type { Provider } from '@earendil-works/pi-ai'
+import { builtinProviders } from '@earendil-works/pi-ai/providers/all'
 import {
   DEFAULT_EXTRA_MODEL_TEMPLATE,
   DEFAULT_OPENCODE_API_KEY_ENV,
@@ -46,15 +49,13 @@ import {
   DEFAULT_CODEX_DISPLAY_NAME,
   DEFAULT_CODEX_ROUTE_ID,
   buildCodexProfile,
-  catalogCodex,
   codexApiKey,
   codexAuth,
   recordKeyFor,
 } from './codex.ts'
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
-import { startCodexLogin } from './codex-login.ts'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
-import type { LoginCommandHost } from './login-command.ts'
+import type { LoginChoice, LoginCommandHost } from './login-command.ts'
 
 /** Settings namespace configuration surfaces address this plugin's section by. */
 const SETTINGS_NS = 'dsh-provider-extra'
@@ -109,6 +110,45 @@ const SectionSchema: Schema<ProviderExtraSection> = Schema.object({
 /** The credential seam when present; resolved per request, never at mount. */
 interface CredentialService {
   resolve(ref: string): Promise<{ value: string } | undefined>
+}
+
+/**
+ * Every catalog provider that ships an interactive login, in catalog order.
+ * The catalog is the authority on how a provider signs in — which methods it
+ * offers, and what each is called — so the picker never re-decides that here.
+ */
+function loginChoices(): readonly LoginChoice[] {
+  const choices: LoginChoice[] = []
+  for (const provider of builtinProviders()) {
+    const oauth = provider.auth?.oauth
+    if (oauth?.login !== undefined) {
+      choices.push({
+        providerId: provider.id,
+        providerName: provider.name,
+        authType: 'oauth',
+        methodLabel: oauth.loginLabel ?? oauth.name,
+      })
+    }
+    const apiKey = provider.auth?.apiKey
+    if (apiKey?.login !== undefined) {
+      choices.push({
+        providerId: provider.id,
+        providerName: provider.name,
+        authType: 'api_key',
+        methodLabel: apiKey.name,
+      })
+    }
+  }
+  return choices
+}
+
+/** The catalog provider behind one sign-in choice. */
+function catalogLoginProvider(providerId: string): Provider {
+  const found = builtinProviders().find(provider => provider.id === providerId)
+  if (found === undefined) {
+    throw new Error('dsh-provider-extra: the installed pi-ai catalog no longer ships provider "' + providerId + '"')
+  }
+  return found
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -223,30 +263,49 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
   // The command is the registry-install-friendly half of the attended sign-in:
-  // it runs in this process, so the grant lands in the credential service the
-  // route already reads and no bin path or peer tree is involved. Profiles
-  // without a command registry (headless compositions) keep the package bin.
+  // it runs in this process, so the credential lands in the store the routes
+  // already read and no bin path or peer tree is involved. It signs into any
+  // provider the installed catalog ships a login for, not only the two routes
+  // this plugin mounts, because a human asking to sign in means the provider
+  // they name and nothing narrower. Profiles without a command registry
+  // (headless compositions) keep the package bin.
   if (config.loginCommandEnabled) {
     ctx.inject(['commands'], (commandCtx) => {
       const host: LoginCommandHost = {
-        login: async (interaction) => {
+        choices: loginChoices,
+        login: async (choice, interaction) => {
           const credentials = () => ctx.get('credentials') as CodexCredentialService | undefined
           const models = createModels(codexAuth(credentials))
-          await startCodexLogin(models, catalogCodex(), interaction)
+          // pi-ai's collection starts empty: the catalog provider carrying the
+          // login implementation has to be handed to it before the flow runs.
+          models.setProvider(catalogLoginProvider(choice.providerId))
+          await models.login(choice.providerId, choice.authType, interaction)
         },
-        hasGrant: async () => {
+        stored: async (providerId) => {
           const credentials = ctx.get('credentials') as CodexCredentialService | undefined
-          if (credentials === undefined) return false
-          return await credentials.readRecord(recordKeyFor(codex.provider)) !== undefined
+          if (credentials === undefined) return undefined
+          const record = await credentials.readRecord(recordKeyFor(providerId))
+          if (record === undefined) return undefined
+          return record.kind === 'api-key' ? 'api_key' : 'oauth'
         },
-        // An attempt outlives the command request that started it, so the
-        // plugin lifetime owns its cancellation, not the request signal.
-        track: (abort) => { ctx.effect(() => abort) },
+        // Resolved per call, never at mount: a composition that mounts no
+        // session UI still gets the command, and says so when it runs.
+        ask: async (request) => {
+          const userQuestions = ctx.get('userQuestions')
+          if (userQuestions === undefined) {
+            throw new Error('dsh-provider-extra: this composition mounts no session UI that can ask the sign-in questions')
+          }
+          return await userQuestions.ask({
+            questions: [...request.questions],
+            agent: request.agent,
+            ...request.signal === undefined ? {} : { signal: request.signal },
+          })
+        },
       }
       commandCtx.commands.register(createLoginCommand(host, config.loginCommandName))
       // Registration is silent otherwise, and the command is the one surface a
       // user cannot see in a config dump: saying it exists is the diagnosis.
-      ctx.logger.info('dsh-provider-extra: /' + config.loginCommandName + ' signs in the codex route')
+      ctx.logger.info('dsh-provider-extra: /' + config.loginCommandName + ' signs in any provider with an interactive login')
     })
   }
 }

@@ -1,248 +1,337 @@
 /**
- * Behavior of the server-side sign-in command: the flow select is answered by
- * id from the requested method, the first credential-bearing event reaches the
- * human while the attempt keeps running, and a repeat invocation reports that
- * attempt instead of starting a second one.
- *
- * A scripted host stands in for pi-ai, so every assertion runs keyless and no
- * network call leaves the process.
- *
- * @module dsh-provider-extra/tests
+ * The sign-in command against fakes: the host stands in for the catalog and
+ * the login flow, and the UI double answers the questions a human would,
+ * including the ones that only a race can end.
  */
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { AuthInteraction } from '@earendil-works/pi-ai'
 import { Context } from '@deepseek-ai/cordis'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
-import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { AuthInteraction } from '@earendil-works/pi-ai'
+import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
+import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from '../src/login-command.ts'
+import type { LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-command.ts'
+import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 
 /** The registry knows the agent contract; deriving it keeps this suite free of a host dependency. */
 type AgentHandle = Parameters<CommandRuntime['list']>[0]
-import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from '../src/login-command.ts'
-import type { LoginCommandHost } from '../src/login-command.ts'
 
-/** The handler reads only `rawInput`; the rest of the invocation is the UI's. */
+/** What the command hands the session UI. */
+type AskRequest = Parameters<LoginCommandHost['ask']>[0]
+
+const CODEX: LoginChoice = {
+  providerId: 'openai-codex',
+  providerName: 'ChatGPT (Codex)',
+  authType: 'oauth',
+  methodLabel: 'Sign in with ChatGPT',
+}
+const ANTHROPIC_SUBSCRIPTION: LoginChoice = {
+  providerId: 'anthropic',
+  providerName: 'Anthropic',
+  authType: 'oauth',
+  methodLabel: 'Claude Pro/Max',
+}
+const ANTHROPIC_KEY: LoginChoice = {
+  providerId: 'anthropic',
+  providerName: 'Anthropic',
+  authType: 'api_key',
+  methodLabel: 'Anthropic API key',
+}
+const CHOICES = [CODEX, ANTHROPIC_SUBSCRIPTION, ANTHROPIC_KEY]
+
+/** One answer a scripted UI gives when asked: a fixed answer, or a reaction to the request. */
+type ScriptedAnswer = AskUserQuestionAnswer | ((request: AskRequest) => AskUserQuestionAnswer | Promise<AskUserQuestionAnswer>)
+
+/** The session UI as a script: every question is recorded and answered in turn. */
+class FakeUi {
+  readonly questions: AskUserQuestionItem[] = []
+  readonly signals: (AbortSignal | undefined)[] = []
+  private readonly script: ScriptedAnswer[]
+
+  constructor(script: ScriptedAnswer[]) {
+    this.script = [...script]
+  }
+
+  readonly ask = async (request: AskRequest): Promise<AskUserQuestionAnswer> => {
+    const question = request.questions[0]
+    assert.notEqual(question, undefined, 'the command asked no question')
+    this.questions.push(question as AskUserQuestionItem)
+    this.signals.push(request.signal)
+    const next = this.script.shift()
+    if (next === undefined) throw new Error('unexpected question: ' + String(question?.question))
+    return typeof next === 'function' ? await next(request) : next
+  }
+
+  /** Questions still unanswered, as a failed expectation reads better than a hang. */
+  get pending(): number {
+    return this.script.length
+  }
+}
+
+/** An answer that picks labels for one question id. */
+function picks(id: string, ...labels: string[]): AskUserQuestionAnswer {
+  return { answers: [{ id, selected: labels, }] }
+}
+
+/** An answer that types free text for one question id. */
+function types(id: string, custom: string): AskUserQuestionAnswer {
+  return { answers: [{ id, selected: [], custom }] }
+}
+
+/** The label the picker shows for one choice. */
+function pickerLabel(ui: FakeUi, label: string): ScriptedAnswer {
+  return (request) => {
+    const options = request.questions[0]?.options ?? []
+    assert.ok(options.some(option => option.label === label), 'no option labelled ' + label)
+    return picks(request.questions[0]?.id ?? '', label)
+  }
+}
+
+/** An answer that stays pending until the question is withdrawn. */
+function waitsForWithdrawal(seen: { aborted?: boolean }): ScriptedAnswer {
+  return (request) => new Promise<AskUserQuestionAnswer>((_, reject) => {
+    const signal = request.signal
+    if (signal === undefined) {
+      reject(new Error('the waiting question carried no signal'))
+      return
+    }
+    signal.addEventListener('abort', () => {
+      seen.aborted = true
+      reject(new Error('withdrawn'))
+    }, { once: true })
+  })
+}
+
+/** A host over the given choices and UI, recording every sign-in it runs. */
+function makeHost(ui: FakeUi, options: {
+  choices?: readonly LoginChoice[]
+  login?: (choice: LoginChoice, interaction: AuthInteraction) => Promise<void>
+  stored?: Map<string, LoginAuthType>
+  /** A flow that resolves without persisting is the case the command must catch. */
+  persist?: boolean
+} = {}): { host: LoginCommandHost; logins: LoginChoice[]; stored: Map<string, LoginAuthType> } {
+  const logins: LoginChoice[] = []
+  const stored = options.stored ?? new Map<string, LoginAuthType>()
+  const persist = options.persist ?? true
+  const host: LoginCommandHost = {
+    choices: () => options.choices ?? CHOICES,
+    login: async (choice, interaction) => {
+      logins.push(choice)
+      if (options.login !== undefined) await options.login(choice, interaction)
+      if (persist) stored.set(choice.providerId, choice.authType)
+    },
+    stored: async (providerId) => stored.get(providerId),
+    ask: ui.ask,
+  }
+  return { host, logins, stored }
+}
+
+/** A command invocation carrying raw input, as the registry would derive it. */
 function invocation(rawInput: string): CommandInvocation {
-  return { rawInput } as unknown as CommandInvocation
+  return {
+    commandId: 'command-1',
+    agent: { id: 'agent-1' },
+    rawInput,
+    attachments: [],
+    signal: new AbortController().signal,
+  } as unknown as CommandInvocation
 }
 
-async function run(definition: CommandDefinition, rawInput = ''): Promise<CommandResult> {
-  return await definition.handler(invocation(rawInput))
-}
-
-function text(result: CommandResult): string {
-  return result.text ?? ''
-}
-
-/** Let the host's login promise settle through its then-handlers. */
-async function settle(): Promise<void> {
-  await new Promise((resolve) => { setImmediate(resolve) })
-}
-
-describe('login command registration', () => {
-  it('registers the requested name with discovery metadata', () => {
-    const host: LoginCommandHost = {
-      login: async () => {},
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, 'renamed-login')
-    assert.equal(definition.name, 'renamed-login')
-    assert.ok(definition.description.length > 0)
-    assert.ok((definition.input?.hint ?? '').includes('device'))
+describe('provider sign-in command', () => {
+  it('asks for a provider and runs the pick through pi-ai', async () => {
+    const ui = new FakeUi([pickerLabel(new FakeUi([]), 'ChatGPT (Codex)')])
+    const { host, logins, stored } = makeHost(ui)
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
+    assert.equal(result.kind, 'success')
+    assert.match(result.kind === 'success' ? result.text ?? '' : '', /Signed in to ChatGPT \(Codex\)/)
+    assert.deepEqual(logins.map(choice => [choice.providerId, choice.authType]), [['openai-codex', 'oauth']])
+    assert.equal(stored.get('openai-codex'), 'oauth')
   })
 
-  it('defaults to the documented name', () => {
-    assert.equal(DEFAULT_LOGIN_COMMAND_NAME, 'dsh-provider-extra-login')
+  it('disambiguates a provider that offers both a subscription and a key', async () => {
+    const ui = new FakeUi([(request) => {
+      const labels = (request.questions[0]?.options ?? []).map(option => option.label)
+      assert.deepEqual(labels, ['ChatGPT (Codex)', 'Anthropic (Claude Pro/Max)', 'Anthropic (Anthropic API key)'])
+      return picks(request.questions[0]?.id ?? '', 'Anthropic (Anthropic API key)')
+    }])
+    const { host, logins } = makeHost(ui)
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(logins.map(choice => [choice.providerId, choice.authType]), [['anthropic', 'api_key']])
   })
-})
 
-describe('login command', () => {
-  it('announces the device code, keeps the attempt, and reports the stored grant', async () => {
-    let finish: () => void = () => {}
-    const completion = new Promise<void>((resolve) => { finish = resolve })
-    const signals: AbortSignal[] = []
-    const host: LoginCommandHost = {
-      login: async (interaction) => {
-        if (interaction.signal !== undefined) signals.push(interaction.signal)
+  it('skips the picker when the input names a provider, and the method word chooses', async () => {
+    const ui = new FakeUi([])
+    const { host, logins } = makeHost(ui)
+    const command = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
+    await command.handler(invocation('anthropic key'))
+    await command.handler(invocation('anthropic'))
+    assert.equal(ui.questions.length, 0)
+    assert.deepEqual(logins.map(choice => choice.authType), ['api_key', 'oauth'])
+  })
+
+  it('refuses an unknown provider without starting a flow', async () => {
+    const ui = new FakeUi([])
+    const { host, logins } = makeHost(ui)
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('nope'))
+    assert.equal(result.kind, 'error')
+    assert.match(result.text, /no sign-in named "nope"/)
+    assert.match(result.text, /openai-codex, anthropic/)
+    assert.equal(logins.length, 0)
+  })
+
+  it('reports what is stored per provider', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui, { stored: new Map<string, LoginAuthType>([['openai-codex', 'oauth']]) })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('status'))
+    const text = result.kind === 'success' ? result.text ?? '' : ''
+    assert.match(text, /ChatGPT \(Codex\) — signed in \(oauth\)/)
+    assert.match(text, /Anthropic — not signed in/)
+  })
+
+  it('holds a device code open and withdraws the question when the flow settles', async () => {
+    const seen: { aborted?: boolean } = {}
+    const ui = new FakeUi([waitsForWithdrawal(seen)])
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
+        interaction.notify({ type: 'device_code', userCode: 'ABCD-EFGH', verificationUri: 'https://example.test/device' })
+        await new Promise(resolve => setTimeout(resolve, 10))
+      },
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('openai-codex'))
+    assert.equal(result.kind, 'success')
+    const detail = ui.questions[0]?.detail ?? ''
+    assert.match(detail, /ABCD-EFGH/)
+    assert.match(detail, /https:\/\/example\.test\/device/)
+    assert.equal(seen.aborted, true, 'the code question outlived the sign-in')
+  })
+
+  it('answers a select prompt with the option id the label names', async () => {
+    const ui = new FakeUi([pickerLabel(new FakeUi([]), 'Device code')])
+    const answered: string[] = []
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
+        answered.push(await interaction.prompt({
+          type: 'select',
+          message: 'How do you want to sign in?',
+          options: [
+            { id: 'browser', label: 'Browser' },
+            { id: 'device_code', label: 'Device code' },
+          ],
+        }))
+      },
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('openai-codex'))
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(answered, ['device_code'])
+  })
+
+  it('returns typed text and keeps a secret out of the model context', async () => {
+    const ui = new FakeUi([types('prompt', 'sk-test-key')])
+    const answered: string[] = []
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
+        answered.push(await interaction.prompt({ type: 'secret', message: 'Paste the API key' }))
+      },
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('anthropic key'))
+    assert.equal(result.kind, 'success', result.kind === 'error' ? result.text : '')
+    assert.deepEqual(answered, ['sk-test-key'])
+    assert.match(ui.questions[0]?.detail ?? '', /never sent to the model/)
+  })
+
+  it('lets a browser callback win the manual-code race', async () => {
+    const controller = new AbortController()
+    const ui = new FakeUi([waitsForWithdrawal({})])
+    const outcome: string[] = []
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
+        setTimeout(() => { controller.abort() }, 5)
+        try {
+          await interaction.prompt({ type: 'manual_code', message: 'Paste the code', signal: controller.signal })
+          outcome.push('answered')
+        } catch {
+          outcome.push('withdrawn')
+        }
+      },
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('openai-codex'))
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(outcome, ['withdrawn'])
+  })
+
+  it('cancels the attempt when the human picks Cancel on the code question', async () => {
+    const ui = new FakeUi([(request) => {
+      const labels = (request.questions[0]?.options ?? []).map(option => option.label)
+      return picks(request.questions[0]?.id ?? '', labels.includes('Cancel') ? 'Cancel' : labels[0] ?? '')
+    }])
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
         interaction.notify({ type: 'device_code', userCode: 'WXYZ-1234', verificationUri: 'https://example.test/device' })
-        await completion
+        await new Promise((_, reject) => {
+          interaction.signal?.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
+        })
       },
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-
-    const first = await run(definition, ' device ')
-    assert.equal(first.kind, 'success')
-    assert.match(text(first), /WXYZ-1234/)
-    assert.match(text(first), /https:\/\/example\.test\/device/)
-    assert.match(text(first), /status/)
-
-    const repeat = await run(definition)
-    assert.equal(repeat.kind, 'success')
-    assert.match(text(repeat), /WXYZ-1234/)
-
-    finish()
-    await settle()
-    const status = await run(definition, 'status')
-    assert.equal(status.kind, 'success')
-    assert.match(text(status), /signed in/i)
-    assert.equal(signals.length, 1)
-  })
-
-  it('answers the flow select by id, never by position', async () => {
-    const answers: string[] = []
-    const options = [
-      { id: 'browser', label: 'Browser login (default)' },
-      { id: 'device_code', label: 'Device code login (headless)' },
-    ]
-    const host: LoginCommandHost = {
-      login: async (interaction) => {
-        answers.push(await interaction.prompt({ type: 'select', message: 'Select OpenAI Codex login method:', options }))
-        interaction.notify({ type: 'auth_url', url: 'https://example.test/auth' })
-      },
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-
-    await run(definition, 'device')
-    await settle()
-    const repeat = await run(definition, 'browser')
-    assert.match(text(repeat), /already|signed in/i)
-    assert.equal(answers.length, 1)
-    await run(definition, 'renew browser')
-    await settle()
-
-    assert.deepEqual(answers, ['device_code', 'browser'])
-  })
-
-  it('defaults to the browser flow and continues when the callback wins the prompt race', async () => {
-    const promptAbort = new AbortController()
-    let outcome: 'resolved' | 'rejected' | undefined
-    const host: LoginCommandHost = {
-      login: async (interaction) => {
-        interaction.notify({ type: 'auth_url', url: 'https://example.test/auth', instructions: 'Open this page.' })
-        const raced = interaction.prompt({ type: 'manual_code', message: 'paste', signal: promptAbort.signal })
-        raced.then(() => { outcome = 'resolved' }, () => { outcome = 'rejected' })
-        promptAbort.abort()
-        await settle()
-      },
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-
-    const started = await run(definition)
-    assert.equal(started.kind, 'success')
-    assert.match(text(started), /https:\/\/example\.test\/auth/)
-    await settle()
-    assert.equal(outcome, 'rejected')
-
-    const status = await run(definition, 'status')
-    assert.match(text(status), /signed in/i)
-  })
-
-  it('reports a failure that arrives before any page is announced', async () => {
-    const host: LoginCommandHost = {
-      login: async () => { throw new Error('device code login is not enabled for this server') },
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-    const result = await run(definition, 'device')
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('openai-codex'))
     assert.equal(result.kind, 'error')
-    assert.match(text(result), /not enabled/)
+    assert.match(result.text, /was cancelled/)
   })
 
-  it('refuses an unknown method with the usage line', async () => {
-    const host: LoginCommandHost = {
-      login: async () => {},
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-    const result = await run(definition, 'sms')
+  it('reports a cancelled picker instead of starting a flow', async () => {
+    const ui = new FakeUi([() => { throw new Error('ASK_ABORTED') }])
+    const { host, logins } = makeHost(ui)
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
     assert.equal(result.kind, 'error')
-    assert.match(text(result), /unknown sign-in request "sms"/)
-    assert.match(text(result), /Usage: \/dsh-provider-extra-login \[browser\|device\|status\|renew\]/)
+    assert.match(result.text, /no provider was picked/)
+    assert.equal(logins.length, 0)
   })
 
-  it('reports the stored grant outside any attempt', async () => {
-    const stored: LoginCommandHost = {
-      login: async () => {},
-      hasGrant: async () => true,
-      track: () => {},
-    }
-    const storedResult = await run(createLoginCommand(stored, DEFAULT_LOGIN_COMMAND_NAME), 'status')
-    assert.equal(storedResult.kind, 'success')
-    assert.match(text(storedResult), /grant is stored/)
-
-    const empty: LoginCommandHost = {
-      login: async () => {},
-      hasGrant: async () => false,
-      track: () => {},
-    }
-    const emptyResult = await run(createLoginCommand(empty, DEFAULT_LOGIN_COMMAND_NAME), 'status')
-    assert.equal(emptyResult.kind, 'success')
-    assert.match(text(emptyResult), /none is stored/)
+  it('refuses to call a sign-in done when nothing was stored', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui, { persist: false })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('openai-codex'))
+    assert.equal(result.kind, 'error')
+    assert.match(result.text, /stored no credential/)
   })
 
-  it('hands the attempt to the plugin lifetime for cancellation', async () => {
-    const disposers: (() => void)[] = []
-    let signal: AbortSignal | undefined
-    const host: LoginCommandHost = {
-      login: async (interaction) => {
-        signal = interaction.signal
-        interaction.notify({ type: 'auth_url', url: 'https://example.test/auth' })
-        await new Promise(() => { /* holds the attempt open like a waiting browser */ })
-      },
-      hasGrant: async () => false,
-      track: (abort) => { disposers.push(abort) },
-    }
-    const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-    await run(definition, 'browser')
-    assert.equal(disposers.length, 1)
-    assert.equal(signal?.aborted, false)
-    disposers[0]!()
-    assert.equal(signal?.aborted, true)
+  it('offers no sign-in when the composition mounts none', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui, { choices: [] })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
+    assert.equal(result.kind, 'error')
+    assert.match(result.text, /no provider with an interactive sign-in/)
+  })
+
+  it('keeps sign-in input out of the session log', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui)
+    const definition: CommandDefinition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
+    assert.equal(definition.recordInput, false)
+    assert.ok(definition.description.length > 0)
   })
 })
-/**
- * The same command against the real registry: the definition must satisfy the
- * harness's own validation, appear in discovery, and look up by name — the
- * fake-driven suite above covers behavior, this one covers the contract.
- */
 
-describe('login command in the harness registry', () => {
+describe('provider sign-in command in the harness registry', () => {
   it('registers, lists, and resolves through CommandRuntime', async () => {
     const ctx = new Context()
     const fiber = await ctx.plugin(CommandRuntime)
     try {
-      const host: LoginCommandHost = {
-        login: async (interaction) => {
-          interaction.notify({ type: 'device_code', userCode: 'ABCD-EFGH', verificationUri: 'https://example.test/device' })
-        },
-        hasGrant: async () => false,
-        track: () => {},
-      }
-      const definition = createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME)
-      const dispose = ctx.commands.register(definition)
+      const ui = new FakeUi([])
+      const { host } = makeHost(ui)
+      const dispose = ctx.commands.register(createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME))
       const agent = { id: 'agent-test' } as unknown as AgentHandle
 
-      const descriptors = ctx.commands.list(agent)
-      const listed = descriptors.find(descriptor => descriptor.name === DEFAULT_LOGIN_COMMAND_NAME)
+      const listed = ctx.commands.list(agent).find(descriptor => descriptor.name === DEFAULT_LOGIN_COMMAND_NAME)
       assert.notEqual(listed, undefined)
       assert.ok(listed!.description.length > 0)
       assert.ok((listed!.input?.hint ?? '').length > 0)
 
       const found = ctx.commands.find(agent, DEFAULT_LOGIN_COMMAND_NAME)
       assert.notEqual(found, undefined)
-      const result = await found!.handler({ rawInput: 'device' } as unknown as CommandInvocation)
+      const result = await found!.handler(invocation('openai-codex'))
       assert.equal(result.kind, 'success')
-      assert.match(result.text ?? '', /ABCD-EFGH/)
 
       dispose()
       assert.equal(ctx.commands.find(agent, DEFAULT_LOGIN_COMMAND_NAME), undefined)
@@ -251,4 +340,3 @@ describe('login command in the harness registry', () => {
     }
   })
 })
-
