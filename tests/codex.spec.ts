@@ -1,0 +1,271 @@
+/**
+ * Behavior of the Codex subscription route: the profile re-keys the catalog
+ * provider without touching its OAuth auth, the harness store round-trips
+ * grants at the record address core shares, and the terminal login conducts
+ * pi-ai's own OAuth conversation without ever printing a secret.
+ *
+ * A seeded in-memory credential service stands in for the credentials
+ * document, and a scripted terminal stands in for the human, so every
+ * assertion runs keyless. The one exception is pi-ai's own getAuth, which
+ * runs unmocked against the seeded grant to prove the stored credential
+ * actually resolves to request auth.
+ *
+ * @module dsh-provider-extra/tests
+ */
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+import { createModels } from '@earendil-works/pi-ai'
+import type { Credential } from '@earendil-works/pi-ai'
+import { credentialKey } from '@deepseek-ai/dsh-credentials'
+import type { CredentialKey, CredentialRecord } from '@deepseek-ai/dsh-credentials'
+import {
+  CODEX_CATALOG_ID,
+  DEFAULT_CODEX_DISPLAY_NAME,
+  DEFAULT_CODEX_ROUTE_ID,
+  HarnessCredentialStore,
+  buildCodexProfile,
+  codexApiKey,
+  codexAuth,
+  recordKeyFor,
+} from '../src/codex.ts'
+import type { CodexCredentialService } from '../src/codex.ts'
+import { answerPrompt, renderEvent, renderPrompt, runCodexLogin } from '../src/codex-login.ts'
+import type { LoginModels, LoginTerminal } from '../src/codex-login.ts'
+
+/** The route under test: the catalog id, so the grant address is shared. */
+const route = { provider: DEFAULT_CODEX_ROUTE_ID, displayName: DEFAULT_CODEX_DISPLAY_NAME }
+
+/** One fresh OAuth grant, as pi-ai's login would produce it. */
+function grant(): Credential {
+  return { type: 'oauth', access: 'access-token', refresh: 'refresh-token', expires: Date.now() + 3600_000, accountId: 'account-1' }
+}
+
+/** An in-memory credentials service standing in for the document. */
+function memoryService(seed: ReadonlyMap<string, CredentialRecord> = new Map()): CodexCredentialService & { records: Map<string, CredentialRecord> } {
+  const records = new Map(seed)
+  return {
+    records,
+    readRecord: (key) => Promise.resolve(records.get(String(key))),
+    listRecords: () => Promise.resolve([...records].map(([key, record]) => ({
+      key: key as unknown as CredentialKey,
+      kind: record.kind,
+    }))),
+    modifyRecord: async (key, mutate) => {
+      const next = await mutate(records.get(String(key)))
+      if (next !== undefined) records.set(String(key), next)
+      return records.get(String(key))
+    },
+    deleteRecord: (key) => {
+      records.delete(String(key))
+      return Promise.resolve()
+    },
+  }
+}
+
+/** A scripted terminal answering every question from a queue. */
+function scriptedTerminal(answers: string[]): LoginTerminal & { printed: string[]; asked: string[] } {
+  const printed: string[] = []
+  const asked: string[] = []
+  const queue = [...answers]
+  return {
+    printed,
+    asked,
+    question: (prompt) => {
+      asked.push(prompt)
+      const answer = queue.shift()
+      assert.notEqual(answer, undefined, 'terminal ran out of scripted answers for: ' + prompt)
+      return Promise.resolve(answer as string)
+    },
+    print: (line) => { printed.push(line) },
+    signal: new AbortController().signal,
+  }
+}
+
+describe('codex record address', () => {
+  it('shares core’s grant address instead of forking a second sign-in', () => {
+    assert.equal(String(recordKeyFor(CODEX_CATALOG_ID)), String(credentialKey('llm-pi-ai', CODEX_CATALOG_ID)))
+  })
+})
+
+describe('codex profile', () => {
+  it('re-keys the catalog provider while keeping its OAuth auth', () => {
+    const profile = buildCodexProfile(route)
+    assert.equal(profile.provider, route.provider)
+    assert.equal(profile.displayName, route.displayName)
+    assert.equal(profile.apiKeyEnv, undefined)
+    const provider = profile.piProvider
+    assert.notEqual(provider, undefined)
+    assert.equal(provider!.id, route.provider)
+    assert.equal(provider!.name, route.displayName)
+    assert.notEqual(provider!.auth.oauth, undefined)
+    const models = provider!.getModels()
+    assert.ok(models.length > 0, 'installed catalog ships codex models')
+    for (const model of models) assert.equal(model.provider, route.provider)
+  })
+
+  it('resolves no per-request key, deferring to the stored grant', async () => {
+    await assert.equal(await codexApiKey(), undefined)
+  })
+})
+
+describe('harness credential store', () => {
+  it('reads nothing without a service and ignores foreign ids', async () => {
+    const bare = new HarnessCredentialStore(() => undefined)
+    await assert.equal(await bare.read(CODEX_CATALOG_ID), undefined)
+    await assert.deepEqual(await bare.list(), [])
+    const keyed = new HarnessCredentialStore(() => memoryService())
+    await assert.equal(await keyed.read('UPPER.DOTTED'), undefined)
+  })
+
+  it('round-trips an OAuth grant the way a login writes it', async () => {
+    const service = memoryService()
+    const store = new HarnessCredentialStore(() => service)
+    // One instance: the grant carries a timestamp, so a second factory call
+    // would differ by a millisecond and fail for no reason.
+    const original = grant()
+    const written = await store.modify(CODEX_CATALOG_ID, async () => original)
+    assert.equal(written?.type, 'oauth')
+    const read = await store.read(CODEX_CATALOG_ID)
+    assert.deepEqual(read, original)
+    const record = service.records.get(String(recordKeyFor(CODEX_CATALOG_ID)))
+    assert.equal(record?.kind, 'grant')
+  })
+
+  it('stores the JSON image, dropping members JSON cannot hold', async () => {
+    const service = memoryService()
+    const store = new HarnessCredentialStore(() => service)
+    const shaped = { ...grant(), extra: undefined } as unknown as Credential
+    await store.modify(CODEX_CATALOG_ID, async () => shaped)
+    const record = service.records.get(String(recordKeyFor(CODEX_CATALOG_ID)))
+    assert.equal(record?.kind, 'grant')
+    assert.ok(!('extra' in ((record as { payload: Record<string, unknown> }).payload)))
+  })
+
+  it('hands the current grant to a refresh and reports foreign scopes as others’', async () => {
+    const foreign = credentialKey('other-plugin', 'other-id')
+    const service = memoryService(new Map([
+      [String(foreign), { kind: 'api-key', key: 'k' }],
+    ]))
+    const store = new HarnessCredentialStore(() => service)
+    const original = grant()
+    await store.modify(CODEX_CATALOG_ID, async () => original)
+    let seen: Credential | undefined = { type: 'api_key' }
+    const rotated: Credential = { type: 'oauth', access: 'new-access', refresh: 'new-refresh', expires: Date.now() + 3600_000, accountId: 'account-1' }
+    await store.modify(CODEX_CATALOG_ID, async (current) => {
+      seen = current
+      return rotated
+    })
+    assert.deepEqual(seen, original)
+    assert.deepEqual(await store.read(CODEX_CATALOG_ID), rotated)
+    assert.deepEqual(await store.list(), [{ providerId: CODEX_CATALOG_ID, type: 'oauth' }])
+  })
+
+  it('refuses writes with nowhere to store and ids with nowhere to address', async () => {
+    const bare = new HarnessCredentialStore(() => undefined)
+    await assert.rejects(() => bare.modify(CODEX_CATALOG_ID, async () => grant()), /nowhere to store/)
+    const keyed = new HarnessCredentialStore(() => memoryService())
+    await assert.rejects(() => keyed.modify('UPPER.DOTTED', async () => grant()), /cannot address/)
+    await keyed.delete('UPPER.DOTTED')
+  })
+
+  it('deletes the grant on sign-out', async () => {
+    const service = memoryService()
+    const store = new HarnessCredentialStore(() => service)
+    await store.modify(CODEX_CATALOG_ID, async () => grant())
+    await store.delete(CODEX_CATALOG_ID)
+    await assert.equal(await store.read(CODEX_CATALOG_ID), undefined)
+  })
+
+  it('resolves request auth from the stored grant through real pi-ai plumbing', async () => {
+    const service = memoryService()
+    const store = new HarnessCredentialStore(() => service)
+    await store.modify(CODEX_CATALOG_ID, async () => grant())
+    const models = createModels(codexAuth(() => service))
+    models.setProvider(buildCodexProfile(route).piProvider!)
+    const model = buildCodexProfile(route).piProvider!.getModels()[0]!
+    const resolved = await models.getAuth(model, {})
+    assert.equal(resolved?.auth.apiKey, 'access-token')
+  })
+})
+
+describe('terminal login', () => {
+  it('renders every pi-ai event with its URL and code, never a secret', () => {
+    assert.deepEqual(renderEvent({ type: 'progress', message: 'Exchanging the code' }), ['Exchanging the code'])
+    assert.deepEqual(
+      renderEvent({ type: 'auth_url', url: 'https://auth.example/start', instructions: 'Approve in the tab' }),
+      ['Approve in the tab', 'https://auth.example/start'],
+    )
+    assert.deepEqual(
+      renderEvent({ type: 'auth_url', url: 'https://auth.example/plain' }),
+      ['Open this page to continue signing in:', 'https://auth.example/plain'],
+    )
+    const device = renderEvent({ type: 'device_code', userCode: 'WXYZ-1234', verificationUri: 'https://device.example' })
+    assert.ok(device.some(line => line.includes('https://device.example')))
+    assert.ok(device.some(line => line.includes('WXYZ-1234')))
+    assert.deepEqual(renderEvent({ type: 'info', message: 'Read this', links: [{ url: 'https://help.example' }] }), ['Read this https://help.example'])
+    assert.deepEqual(renderEvent({ type: 'info', message: 'Plain' }), ['Plain'])
+  })
+
+  it('answers a select by id, whether the human typed the number or the id', async () => {
+    const prompt = renderPrompt({
+      type: 'select',
+      message: 'Select method:',
+      options: [{ id: 'browser', label: 'Browser login' }, { id: 'device_code', label: 'Device code' }],
+    })
+    assert.ok(prompt.options !== undefined)
+    const byNumber = scriptedTerminal(['2'])
+    await assert.equal(await answerPrompt(byNumber, {
+      type: 'select',
+      message: 'Select method:',
+      options: [{ id: 'browser', label: 'Browser login' }, { id: 'device_code', label: 'Device code' }],
+    }), 'device_code')
+    const byId = scriptedTerminal(['browser'])
+    await assert.equal(await answerPrompt(byId, {
+      type: 'select',
+      message: 'Select method:',
+      options: [{ id: 'browser', label: 'Browser login' }, { id: 'device_code', label: 'Device code' }],
+    }), 'browser')
+    const lost = scriptedTerminal(['7'])
+    await assert.rejects(() => answerPrompt(lost, {
+      type: 'select',
+      message: 'Select method:',
+      options: [{ id: 'browser', label: 'Browser login' }],
+    }), /answer the prompt/)
+  })
+
+  it('passes text answers through with their placeholder hint', async () => {
+    const terminal = scriptedTerminal(['pasted-code'])
+    const answer = await answerPrompt(terminal, { type: 'manual_code', message: 'Paste the code', placeholder: 'http://localhost:1455/auth/callback' })
+    assert.equal(answer, 'pasted-code')
+    assert.ok(terminal.asked[0]!.includes('http://localhost:1455/auth/callback'))
+  })
+
+  it('conducts the login against pi-ai’s own conversation and prints no secret', async () => {
+    const seen: { providerId?: string; type?: string } = {}
+    const terminal = scriptedTerminal(['2'])
+    const models: LoginModels = {
+      setProvider: () => {},
+      login: async (providerId, type, interaction) => {
+        seen.providerId = providerId
+        seen.type = type
+        const choice = await interaction.prompt({
+          type: 'select',
+          message: 'Select OpenAI Codex login method:',
+          options: [{ id: 'browser', label: 'Browser' }, { id: 'device_code', label: 'Device' }],
+        })
+        assert.equal(choice, 'device_code')
+        interaction.notify({ type: 'device_code', userCode: 'WXYZ-1234', verificationUri: 'https://device.example' })
+        return grant()
+      },
+    }
+    await runCodexLogin(models, { id: CODEX_CATALOG_ID }, terminal)
+    assert.deepEqual(seen, { providerId: CODEX_CATALOG_ID, type: 'oauth' })
+    assert.ok(terminal.printed.some(line => line.includes('WXYZ-1234')))
+    assert.ok(terminal.printed.some(line => line.includes('Signed in')))
+    for (const line of terminal.printed) {
+      assert.ok(!line.includes('access-token'), 'output must never carry the access token')
+      assert.ok(!line.includes('refresh-token'), 'output must never carry the refresh token')
+    }
+  })
+})

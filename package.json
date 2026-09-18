@@ -1,0 +1,48 @@
+{
+  "name": "dsh-provider-extra",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/assagman/dsh-provider-extra.git"
+  },
+  "engines": {
+    "node": "^24.0.0"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "type": "module",
+  "exports": "./dist/index.js",
+  "description": "Extra LLM provider routes for DeepSeek Harness: OpenCode Go with per-session x-opencode-session routing, and OpenAI Codex over ChatGPT-subscription OAuth.",
+  "scripts": {
+    "codex:login": "node --import tsx/esm scripts/codex-login.ts",
+    "test": "node --import tsx/esm --test \"tests/*.spec.ts\"",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:build": "node --test tests/plugin-load.test.mjs",
+    "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run test:build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-llm-pi-ai": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.0",
+    "@deepseek-ai/cordis": "link:.harness/vendor/cordis",
+    "@deepseek-ai/dsh-credentials": "link:.harness/packages/credentials/credentials",
+    "@deepseek-ai/dsh-credentials-local": "link:.harness/packages/credentials/credentials-local",
+    "@deepseek-ai/dsh-llm": "link:.harness/packages/llm/llm",
+    "@deepseek-ai/dsh-llm-pi-ai": "link:.harness/packages/llm/llm-pi-ai",
+    "@deepseek-ai/dsh-settings": "link:.harness/packages/settings/settings",
+    "@deepseek-ai/schemastery": "link:.harness/vendor/schemastery",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3"
+  }
+}

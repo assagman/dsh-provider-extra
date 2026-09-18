@@ -1,0 +1,10 @@
+# Keep linked harness packages on one checkout rather than mixing registry builds.
+packages: []
+autoInstallPeers: false
+minimumReleaseAge: 10080
+allowBuilds:
+  # Transitive dependencies of the pinned @earendil-works/pi-ai; esbuild's
+  # binary is required by tsx at runtime.
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
