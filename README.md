@@ -56,7 +56,7 @@ Rebuild with `pnpm run build` after source changes, then restart the affected pr
 
 ### Optional profile overrides
 
-Defaults use the `opencode-go` and `openai-codex` routes, `OPENCODE_API_KEY`, the sign-in command `dsh-provider-extra-login`, and the fallback session ID `dsh-provider-extra`.
+Defaults use the `opencode-go` and `openai-codex` routes, `OPENCODE_API_KEY`, the provider sign-in command `dsh-provider-extra-login`, and the fallback session ID `dsh-provider-extra`.
 
 To customize them, add an ID-targeted override to `$DSH_HOME/profiles/web/cordis.patch.yml`, `$DSH_HOME/profiles/tui/cordis.patch.yml`, or both. `DSH_HOME` defaults to `~/.dsh`.
 
@@ -105,20 +105,20 @@ dsh-provider-extra:
 
 Each entry clones wire behavior from its template. Later entries win by ID. A catalog-owned ID is not replaced. An unknown template becomes a model diagnostic without disabling the route.
 
-## Codex sign-in
+## Provider sign-in
 
-Sign in from the profile you are already using: the plugin registers a command in the harness command palette.
+Sign in from the profile you are already using: the plugin registers a command in the harness command palette, and it reaches every provider the installed pi-ai catalog ships a login for — the two routes here, and core's own.
 
 ```text
-/dsh-provider-extra-login            # browser login (the callback listens on localhost:1455)
-/dsh-provider-extra-login device     # device code, for a headless or remote host
-/dsh-provider-extra-login status     # current attempt, or the stored grant
-/dsh-provider-extra-login renew      # replace a stored grant
+/dsh-provider-extra-login                # pick a provider, then run its sign-in
+/dsh-provider-extra-login openai-codex   # skip the picker: that provider's subscription login
+/dsh-provider-extra-login anthropic key  # that provider's API-key entry
+/dsh-provider-extra-login status         # what is stored, provider by provider
 ```
 
-The command runs inside the server, so the grant lands in the credential store the route reads, and the route serves it on the next request with no restart. It prints the page or device code, then keeps the attempt in the background: the command returns before the human finishes, and `status` reports the outcome. Runs only in profiles that compose the command registry; set `loginCommandEnabled: false` to omit it.
+The command runs inside the server, so the credential lands in the store the routes read, and it serves the next request with no restart. Subscription flows show the page or device code as a dialog question and then finish on their own; a provider that asks for an API key collects it in the same dialog, and the value goes to the command only — it never enters the model's context. The command reports success only after reading the stored record back, so a flow that resolves without persisting is reported instead of passed off as a sign-in. Runs only in profiles that compose both the command registry and a session UI; set `loginCommandEnabled: false` to omit it.
 
-Without a command palette — a headless composition, or a sign-in for a server you are not attached to — use the shipped bin instead, with the same `DSH_HOME` as the harness. It needs a profile that has booted at least once, because that is what installs the tree the bin resolves the harness packages through:
+Without a command palette — a headless composition, or a sign-in for a server you are not attached to — use the shipped bin instead. It signs into the Codex route only, and needs the same `DSH_HOME` as the harness plus a profile that has booted at least once, because that is what installs the tree the bin resolves the harness packages through:
 
 ```sh
 "$DSH_HOME/profiles/web/node_modules/.bin/dsh-provider-extra-login"
