@@ -33,6 +33,8 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { LlmError, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-commands'
+import { createModels } from '@earendil-works/pi-ai'
 import {
   DEFAULT_EXTRA_MODEL_TEMPLATE,
   DEFAULT_OPENCODE_API_KEY_ENV,
@@ -44,10 +46,15 @@ import {
   DEFAULT_CODEX_DISPLAY_NAME,
   DEFAULT_CODEX_ROUTE_ID,
   buildCodexProfile,
+  catalogCodex,
   codexApiKey,
   codexAuth,
+  recordKeyFor,
 } from './codex.ts'
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
+import { startCodexLogin } from './codex-login.ts'
+import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
+import type { LoginCommandHost } from './login-command.ts'
 
 /** Settings namespace configuration surfaces address this plugin's section by. */
 const SETTINGS_NS = 'dsh-provider-extra'
@@ -62,6 +69,8 @@ export interface Config {
   codexEnabled: boolean
   codexRouteId: string
   codexDisplayName: string
+  loginCommandEnabled: boolean
+  loginCommandName: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -74,6 +83,8 @@ export const Config: Schema<Config> = Schema.object({
   codexEnabled: Schema.boolean().default(true),
   codexRouteId: Schema.string().default(DEFAULT_CODEX_ROUTE_ID),
   codexDisplayName: Schema.string().default(DEFAULT_CODEX_DISPLAY_NAME),
+  loginCommandEnabled: Schema.boolean().default(true),
+  loginCommandName: Schema.string().default(DEFAULT_LOGIN_COMMAND_NAME),
 })
 
 export const name = 'dsh-provider-extra'
@@ -211,4 +222,31 @@ export function apply(ctx: Context, config: Config): void {
       onChange: () => { /* per-operation snapshot; no swap needed */ },
     })
   })
+  // The command is the registry-install-friendly half of the attended sign-in:
+  // it runs in this process, so the grant lands in the credential service the
+  // route already reads and no bin path or peer tree is involved. Profiles
+  // without a command registry (headless compositions) keep the package bin.
+  if (config.loginCommandEnabled) {
+    ctx.inject(['commands'], (commandCtx) => {
+      const host: LoginCommandHost = {
+        login: async (interaction) => {
+          const credentials = () => ctx.get('credentials') as CodexCredentialService | undefined
+          const models = createModels(codexAuth(credentials))
+          await startCodexLogin(models, catalogCodex(), interaction)
+        },
+        hasGrant: async () => {
+          const credentials = ctx.get('credentials') as CodexCredentialService | undefined
+          if (credentials === undefined) return false
+          return await credentials.readRecord(recordKeyFor(codex.provider)) !== undefined
+        },
+        // An attempt outlives the command request that started it, so the
+        // plugin lifetime owns its cancellation, not the request signal.
+        track: (abort) => { ctx.effect(() => abort) },
+      }
+      commandCtx.commands.register(createLoginCommand(host, config.loginCommandName))
+      // Registration is silent otherwise, and the command is the one surface a
+      // user cannot see in a config dump: saying it exists is the diagnosis.
+      ctx.logger.info('dsh-provider-extra: /' + config.loginCommandName + ' signs in the codex route')
+    })
+  }
 }
