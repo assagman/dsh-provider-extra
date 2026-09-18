@@ -93,15 +93,23 @@ function words(rawInput: string): string[] {
   return rawInput.trim().toLowerCase().split(/\s+/u).filter(word => word.length > 0)
 }
 
-/** The option label for one choice; method labels disambiguate dual-auth providers. */
+/** The label one choice shows: its provider alone when that provider has a single method. */
+function choiceLabel(choice: LoginChoice, shared: boolean): string {
+  if (!shared) return choice.providerName
+  // A method label that already names its provider is the whole label: stitching
+  // the name onto it again reads as a stutter to the human choosing from it.
+  return choice.methodLabel.toLowerCase().includes(choice.providerName.toLowerCase())
+    ? choice.methodLabel
+    : choice.providerName + ' (' + choice.methodLabel + ')'
+}
+
+/** The option label for one choice; method labels disambiguate multi-auth providers. */
 function optionLabels(choices: readonly LoginChoice[]): string[] {
   const perProvider = new Map<string, number>()
   for (const choice of choices) {
     perProvider.set(choice.providerId, (perProvider.get(choice.providerId) ?? 0) + 1)
   }
-  return choices.map(choice => (perProvider.get(choice.providerId) ?? 0) > 1
-    ? choice.providerName + ' (' + choice.methodLabel + ')'
-    : choice.providerName)
+  return choices.map(choice => choiceLabel(choice, (perProvider.get(choice.providerId) ?? 0) > 1))
 }
 
 /** The question the picker asks, one option per provider-method pair. */

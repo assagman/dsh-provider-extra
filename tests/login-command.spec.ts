@@ -30,7 +30,7 @@ const ANTHROPIC_SUBSCRIPTION: LoginChoice = {
   providerId: 'anthropic',
   providerName: 'Anthropic',
   authType: 'oauth',
-  methodLabel: 'Claude Pro/Max',
+  methodLabel: 'Anthropic (Claude Pro/Max)',
 }
 const ANTHROPIC_KEY: LoginChoice = {
   providerId: 'anthropic',
@@ -149,11 +149,11 @@ describe('provider sign-in command', () => {
     assert.equal(stored.get('openai-codex'), 'oauth')
   })
 
-  it('disambiguates a provider that offers both a subscription and a key', async () => {
+  it('disambiguates a provider that offers both a subscription and a key, naming each method once', async () => {
     const ui = new FakeUi([(request) => {
       const labels = (request.questions[0]?.options ?? []).map(option => option.label)
-      assert.deepEqual(labels, ['ChatGPT (Codex)', 'Anthropic (Claude Pro/Max)', 'Anthropic (Anthropic API key)'])
-      return picks(request.questions[0]?.id ?? '', 'Anthropic (Anthropic API key)')
+      assert.deepEqual(labels, ['ChatGPT (Codex)', 'Anthropic (Claude Pro/Max)', 'Anthropic API key'])
+      return picks(request.questions[0]?.id ?? '', 'Anthropic API key')
     }])
     const { host, logins } = makeHost(ui)
     const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation(''))
