@@ -1,3 +1,6 @@
+# macOS metadata
+.DS_Store
+
 # Logs
 logs
 *.log
@@ -36,6 +39,10 @@ bower_components
 
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
+
+# The harness checkout and credentials belong to the local installation.
+.harness
+.credentials.yaml
 
 # Dependency directories
 node_modules/
