@@ -44,7 +44,7 @@ These commands remove the profile dependency and bundle activation, not stored c
 For unreleased work, clone this repository and link the checkout instead:
 
 ```sh
-git clone https://github.com/assagman/dsh-provider-extra.git
+git clone https://github.com/sagmans/dsh-provider-extra.git
 cd dsh-provider-extra
 pnpm install --frozen-lockfile
 pnpm run check

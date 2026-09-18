@@ -39,10 +39,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/assagman/dsh-provider-extra.git"
+    "url": "git+https://github.com/sagmans/dsh-provider-extra.git"
   },
-  "homepage": "https://github.com/assagman/dsh-provider-extra#readme",
-  "bugs": "https://github.com/assagman/dsh-provider-extra/issues",
+  "homepage": "https://github.com/sagmans/dsh-provider-extra#readme",
+  "bugs": "https://github.com/sagmans/dsh-provider-extra/issues",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
