@@ -5,64 +5,54 @@ Extra provider routes for [DeepSeek Harness](https://github.com/deepseek-ai/deep
 - **OpenCode Go:** sends the live conversation ID in `x-opencode-session` for routing and prompt caching.
 - **OpenAI Codex:** uses a ChatGPT subscription through pi-ai's OAuth flow and the harness credential store.
 
-This repository is installed from source. It is not published to npm. `private: true` prevents accidental publication. The code is [MIT licensed](LICENSE).
+Published on npm as [`@sagmans/dsh-provider-extra`](https://www.npmjs.com/package/@sagmans/dsh-provider-extra); every release carries a provenance attestation built by the tag workflow, and no npm token is stored. The code is [MIT licensed](LICENSE).
 
 ## Requirements
 
 - Node.js 24 LTS (verified with 24.20.0).
 - pnpm 11.21.0 for this repository.
-- A built DeepSeek Harness checkout. The tested revision is `aa8262ec091698bae9a6b04773a6b5b06ad4aef2`.
+- A DeepSeek Harness install on the supported line: `>=0.1.5-rc.1 <0.1.6` (verified against `0.1.5-rc.2`). The plugin declares that range as a peer dependency, so a profile resolves the harness copy it already has rather than a second framework instance.
 
-The npm harness packages still resolve to `0.0.1-rc.1` as of September 18, 2026. This plugin uses the source checkout rather than assuming those releases provide the required APIs. Keep the plugin and the running harness on the same checkout to avoid mixing framework instances.
+## Install
 
-## Install from source
-
-Clone this repository, then prepare the pinned harness inside its ignored `.harness` directory:
+Register the bundle in each profile you use. Web and TUI are separate compositions:
 
 ```sh
-git clone https://github.com/assagman/dsh-provider-extra.git
-cd dsh-provider-extra
-git clone https://github.com/deepseek-ai/deepseek-harness.git .harness
-git -C .harness checkout aa8262ec091698bae9a6b04773a6b5b06ad4aef2
-pnpm --dir .harness install --frozen-lockfile
-pnpm --dir .harness run build
-pnpm install --frozen-lockfile
-pnpm run check
+dsh plugin --profile web add @sagmans/dsh-provider-extra
+dsh plugin --profile tui add @sagmans/dsh-provider-extra
 ```
 
-The harness build includes its native and web components. Follow the [upstream development prerequisites](https://github.com/deepseek-ai/deepseek-harness/blob/aa8262ec091698bae9a6b04773a6b5b06ad4aef2/docs/development.md) for your platform.
-
-If you already run a built harness checkout, link it instead of cloning a second copy. On macOS or Linux, from this repository:
+A release of the harness CLI is installable without a launcher already on `PATH`:
 
 ```sh
-ln -s /absolute/path/to/deepseek-harness .harness
-pnpm install --frozen-lockfile
-pnpm run check
+pnpm dlx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @sagmans/dsh-provider-extra
 ```
 
-If `.harness` does not exist, you can use this alternative. Do not overwrite an existing checkout. No tracked file needs your machine's absolute path. The lockfile links through `.harness` on every machine.
-
-## Register each profile
-
-Web and TUI are separate compositions. From this built plugin checkout, add the bundle to each profile you use:
-
-```sh
-dsh plugin --profile web add "link:$PWD"
-dsh plugin --profile tui add "link:$PWD"
-```
-
-If you have no `dsh` launcher, replace `dsh` with `pnpm --dir .harness dsh`. Use the same harness installation that runs your profiles.
-
-The package declares `dsh.bundle.patch`. The CLI adds it to the profile's bundle list, and its patch loads the compiled plugin automatically. `add link:` records a dependency that DSH can manage. A bare `pnpm link` is not the registration procedure.
+The package declares `dsh.bundle.patch`. The CLI adds it to the profile's bundle list, and its patch loads the compiled plugin automatically. A bare `pnpm link` is not the registration procedure.
 
 To remove it from a profile:
 
 ```sh
-dsh plugin --profile web remove dsh-provider-extra
-dsh plugin --profile tui remove dsh-provider-extra
+dsh plugin --profile web remove @sagmans/dsh-provider-extra
+dsh plugin --profile tui remove @sagmans/dsh-provider-extra
 ```
 
-These commands remove the profile dependency and bundle activation, not your source checkout or stored credentials. Restart the affected profiles after adding or removing the bundle.
+These commands remove the profile dependency and bundle activation, not stored credentials. Restart the affected profiles after adding or removing the bundle.
+
+### Install from source
+
+For unreleased work, clone this repository and link the checkout instead:
+
+```sh
+git clone https://github.com/assagman/dsh-provider-extra.git
+cd dsh-provider-extra
+pnpm install --frozen-lockfile
+pnpm run check
+dsh plugin --profile web add "link:$PWD"
+dsh plugin --profile tui add "link:$PWD"
+```
+
+Rebuild with `pnpm run build` after source changes, then restart the affected profiles. The bundle uses compiled JavaScript without a TypeScript loader. Keep the linked checkout at its registered path.
 
 ### Optional profile overrides
 
@@ -83,19 +73,17 @@ Preserve unrelated profile entries. Do not add a manual `insert` or `name`: the 
 
 If you used the earlier manual registration, replace its `insert` block with an ID-targeted override before running `add`. Keep your existing `config` values. A leftover manual insert can cause duplicate loading or keep the plugin active after `remove`.
 
-Rebuild with `pnpm run build` after source changes, then restart the affected profiles. The bundle uses compiled JavaScript without a TypeScript loader. Keep the linked checkout at its registered path.
-
 Keep `opencode-go` and `openai-codex` out of the built-in `llm-pi-ai` provider configuration. A route can have only one adapter. A duplicate produces `DUPLICATE_ADAPTER`. The plugin logs the conflict and leaves that route with its existing owner. You can choose a different `routeId`, such as `opencode-go-session`, when you need both Go routes.
 
-Start the profile from the same harness checkout:
+Start a profile with the same harness install that owns the profiles:
 
 ```sh
-pnpm --dir .harness dsh web
+dsh web
 # Or:
-pnpm --dir .harness dsh --profile tui
+dsh --profile tui
 ```
 
-An existing `dsh` launcher is also suitable if it uses that checkout. Select a model from the registered route in the model picker.
+Select a model from the registered route in the model picker.
 
 ## OpenCode Go credentials and models
 
@@ -117,13 +105,15 @@ Each entry clones wire behavior from its template. Later entries win by ID. A ca
 
 ## Codex sign-in
 
-Run the attended login from this repository, with the same `DSH_HOME` as your harness:
+Run the attended login with the same `DSH_HOME` as your harness. An installed package ships the entry point:
 
 ```sh
-pnpm codex:login
+dsh-provider-extra-login
 # If the server uses a non-default credentials file:
-pnpm codex:login --credentials-path /absolute/path/to/.credentials.yaml
+dsh-provider-extra-login --credentials-path /absolute/path/to/.credentials.yaml
 ```
+
+From a source checkout, `pnpm codex:login` runs the same entry point through the TypeScript loader.
 
 Choose device-code login for a headless host or browser login for a desktop. Follow the URL and prompts printed by pi-ai. The browser callback uses `localhost:1455`. The prompt also accepts a pasted redirect URL.
 
@@ -132,16 +122,31 @@ The grant is stored in `$DSH_HOME/.credentials.yaml` by default. Writes use the 
 ## Development and verification
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm run check
 pnpm audit --audit-level high
 ```
 
-`check` runs type checking, 30 source tests, the build, and three integration tests. The plain-Node smoke test mounts both compiled routes in the real Cordis/LLM runtime. Two CLI tests exercise add, repeated add, profile overrides, and remove in disposable web/TUI profiles. The CLI tests use offline package linking through the built harness CLI in `.harness`.
+`check` runs type checking, 30 source tests, the build, three integration tests, the 22 release guard tests, and the package smoke. The plain-Node smoke test mounts both compiled routes in the real Cordis/LLM runtime. Two CLI tests exercise add, repeated add, profile overrides, and remove in disposable web/TUI profiles; they drive the registry CLI this repository develops against (`@deepseek-ai/dsh@0.1.5-rc.2`), so no harness checkout is needed.
 
 Tests use a local mock gateway or seeded grants. They require no API key, OAuth login, or paid provider requests.
 
-CI builds the pinned harness host packages, then performs the same plugin checks. CI uses read-only permissions and no account credentials. New dependency releases must be at least seven days old. `pnpm-workspace.yaml` limits lifecycle scripts.
+CI installs from the registry with read-only permissions and no account credentials, verifies dependency signatures and attestations, and runs the same checks. New dependency releases must be at least seven days old, and `pnpm-workspace.yaml` limits which lifecycle scripts may run.
 
-A fresh source build of the full harness has additional upstream requirements. The plugin smoke test does not prove a real account can authenticate or a remote provider is available. To verify those, sign in locally and send one message through each configured route.
+The package smoke test does not prove a real account can authenticate or a remote provider is available. To verify those, install a candidate into a profile built on the supported harness line and send one message through each configured route.
 
 Before sending a pull request, run the checks and describe the behavior changed. Report security problems privately to the repository maintainer, not in public issues. Remove keys, grants, conversation content, and machine-specific paths from shared logs.
+
+## Releasing
+
+Published artefacts carry a provenance attestation, which only a CI provider can issue, so releases ship from the tag workflow rather than a laptop.
+
+1. Bump `version` in `package.json`, land it on `main` through a reviewed PR, and wait for CI to pass on the merged SHA.
+2. Tag that SHA with a signed tag and push it. The tag ruleset admits repository admins only.
+3. [`.github/workflows/release.yml`](.github/workflows/release.yml) re-runs the checks and the package smoke; the publish job then waits for a maintainer's approval on the `npm-release` environment before it publishes with OIDC trusted publishing and automatic provenance.
+
+The workflow stores no npm token: the registry trusts `release.yml` on the `npm-release` environment, and [`scripts/npm/release.py`](scripts/npm/release.py) creates both the environment and that trust. The full runbook is [RELEASE.md](RELEASE.md).
+
+## License
+
+MIT

@@ -16,7 +16,6 @@ concurrency:
 env:
   NODE_VERSION: '24.20.0'
   PNPM_VERSION: '11.21.0'
-  HARNESS_REVISION: aa8262ec091698bae9a6b04773a6b5b06ad4aef2
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -27,12 +26,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          repository: deepseek-ai/deepseek-harness
-          ref: ${{ env.HARNESS_REVISION }}
-          path: .harness
-          persist-credentials: false
       - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -41,13 +34,28 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/pnpm" --ignore-scripts --no-audit "pnpm@$PNPM_VERSION"
           echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Build pinned harness host packages
-        run: |
-          pnpm --dir .harness install --frozen-lockfile
-          pnpm --dir .harness run build:lib:host
+      # Harness packages arrive from the registry at the version this plugin
+      # declares, so the checks exercise what an installed profile resolves.
       - name: Install plugin dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify plugin
-        run: pnpm run check
+      # Registry signatures and publish attestations for the whole tree: an
+      # unsigned or tampered dependency fails here, before anything ships.
+      - name: Dependency signatures
+        run: npm audit signatures
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm run build
+      # The CLI and mount tests run the build output, not the sources.
+      - name: Integration tests
+        run: pnpm run test:build
+      # A regression in the release guards would first surface as an
+      # unrecoverable registry write, so they run on every change.
+      - name: Release helper tests
+        run: pnpm test:release
+      - name: Package smoke
+        run: pnpm run pack-smoke
       - name: Audit plugin dependencies
         run: pnpm audit --audit-level high
