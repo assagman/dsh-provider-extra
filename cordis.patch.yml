@@ -1,0 +1,6 @@
+# Bundle ownership lets dsh plugin add/remove control activation without manual inserts.
+- insert:
+    - id: dsh-provider-extra
+      name: dsh-provider-extra
+      config:
+        fallbackSessionId: dsh-provider-extra

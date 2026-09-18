@@ -44,24 +44,46 @@ If `.harness` does not exist, you can use this alternative. Do not overwrite an 
 
 ## Register each profile
 
-Web and TUI are separate compositions. Register the plugin in each profile you use, even though both can load the same build and credential store.
+Web and TUI are separate compositions. From this built plugin checkout, add the bundle to each profile you use:
 
-Add this entry to `$DSH_HOME/profiles/web/cordis.patch.yml`, `$DSH_HOME/profiles/tui/cordis.patch.yml`, or both. `DSH_HOME` defaults to `~/.dsh`. Preserve other entries in those files.
-
-```yaml
-- insert:
-    - id: dsh-provider-extra
-      name: /absolute/path/to/dsh-provider-extra/dist/index.js
-      config:
-        apiKeyEnv: OPENCODE_API_KEY
-        routeId: opencode-go
-        displayName: OpenCode Go
-        fallbackSessionId: dsh-provider-extra
-        # codexEnabled: true
-        # codexRouteId: openai-codex
+```sh
+dsh plugin --profile web add "link:$PWD"
+dsh plugin --profile tui add "link:$PWD"
 ```
 
-Use `dist/index.js`, not `src/index.ts`: the normal harness process loads JavaScript without a TypeScript loader. Rebuild with `pnpm run build` after source changes, then restart the affected profiles. Keep the checkout at its registered path.
+If you have no `dsh` launcher, replace `dsh` with `pnpm --dir .harness dsh`. Use the same harness installation that runs your profiles.
+
+The package declares `dsh.bundle.patch`. The CLI adds it to the profile's bundle list, and its patch loads the compiled plugin automatically. `add link:` records a dependency that DSH can manage. A bare `pnpm link` is not the registration procedure.
+
+To remove it from a profile:
+
+```sh
+dsh plugin --profile web remove dsh-provider-extra
+dsh plugin --profile tui remove dsh-provider-extra
+```
+
+These commands remove the profile dependency and bundle activation, not your source checkout or stored credentials. Restart the affected profiles after adding or removing the bundle.
+
+### Optional profile overrides
+
+Defaults use the `opencode-go` and `openai-codex` routes, `OPENCODE_API_KEY`, and the fallback session ID `dsh-provider-extra`.
+
+To customize them, add an ID-targeted override to `$DSH_HOME/profiles/web/cordis.patch.yml`, `$DSH_HOME/profiles/tui/cordis.patch.yml`, or both. `DSH_HOME` defaults to `~/.dsh`.
+
+```yaml
+- id: dsh-provider-extra
+  config:
+    apiKeyEnv: OPENCODE_GO_API_KEY
+    routeId: opencode-go-session
+    displayName: OpenCode Go (session)
+    # codexEnabled: false
+```
+
+Preserve unrelated profile entries. Do not add a manual `insert` or `name`: the bundle owns plugin activation. Overrides can remain after removal without keeping the plugin active.
+
+If you used the earlier manual registration, replace its `insert` block with an ID-targeted override before running `add`. Keep your existing `config` values. A leftover manual insert can cause duplicate loading or keep the plugin active after `remove`.
+
+Rebuild with `pnpm run build` after source changes, then restart the affected profiles. The bundle uses compiled JavaScript without a TypeScript loader. Keep the linked checkout at its registered path.
 
 Keep `opencode-go` and `openai-codex` out of the built-in `llm-pi-ai` provider configuration. A route can have only one adapter. A duplicate produces `DUPLICATE_ADAPTER`. The plugin logs the conflict and leaves that route with its existing owner. You can choose a different `routeId`, such as `opencode-go-session`, when you need both Go routes.
 
@@ -114,7 +136,9 @@ pnpm run check
 pnpm audit --audit-level high
 ```
 
-`check` runs type checking, 30 source tests, the build, and a plain-Node smoke test. The smoke test mounts both compiled routes in the real Cordis/LLM runtime. Tests use a local mock gateway or seeded grants. They require no API key, OAuth login, or paid provider requests.
+`check` runs type checking, 30 source tests, the build, and three integration tests. The plain-Node smoke test mounts both compiled routes in the real Cordis/LLM runtime. Two CLI tests exercise add, repeated add, profile overrides, and remove in disposable web/TUI profiles. The CLI tests use offline package linking through the built harness CLI in `.harness`.
+
+Tests use a local mock gateway or seeded grants. They require no API key, OAuth login, or paid provider requests.
 
 CI builds the pinned harness host packages, then performs the same plugin checks. CI uses read-only permissions and no account credentials. New dependency releases must be at least seven days old. `pnpm-workspace.yaml` limits lifecycle scripts.
 

@@ -12,14 +12,23 @@
   },
   "packageManager": "pnpm@11.21.0",
   "type": "module",
-  "exports": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "description": "Extra LLM provider routes for DeepSeek Harness: OpenCode Go with per-session x-opencode-session routing, and OpenAI Codex over ChatGPT-subscription OAuth.",
   "scripts": {
     "codex:login": "node --import tsx/esm scripts/codex-login.ts",
     "test": "node --import tsx/esm --test \"tests/*.spec.ts\"",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "test:build": "node --test tests/plugin-load.test.mjs",
+    "test:build": "node --test \"tests/*.test.mjs\"",
     "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run test:build"
   },
   "peerDependencies": {
