@@ -1,56 +1,92 @@
 {
-  "name": "dsh-provider-extra",
+  "name": "@sagmans/dsh-provider-extra",
   "version": "0.1.0",
-  "private": true,
+  "description": "Extra LLM provider routes for DeepSeek Harness: OpenCode Go with per-session x-opencode-session routing, and OpenAI Codex over ChatGPT-subscription OAuth.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin",
+    "llm",
+    "provider",
+    "opencode",
+    "codex",
+    "cordis"
+  ],
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/assagman/dsh-provider-extra.git"
-  },
-  "engines": {
-    "node": "^24.0.0"
-  },
-  "packageManager": "pnpm@11.21.0",
   "type": "module",
+  "main": "./dist/index.js",
   "exports": {
     ".": "./dist/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "dsh-provider-extra-login": "./dist/login-cli.js"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^24.0.0"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/assagman/dsh-provider-extra.git"
+  },
+  "homepage": "https://github.com/assagman/dsh-provider-extra#readme",
+  "bugs": "https://github.com/assagman/dsh-provider-extra/issues",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.1.5-rc.1 <0.1.6",
+      "dshReleases": {
+        "0.1.5-rc.2": "compatible"
+      }
     }
   },
-  "description": "Extra LLM provider routes for DeepSeek Harness: OpenCode Go with per-session x-opencode-session routing, and OpenAI Codex over ChatGPT-subscription OAuth.",
   "scripts": {
-    "codex:login": "node --import tsx/esm scripts/codex-login.ts",
+    "codex:login": "node --import tsx/esm src/login-cli.ts",
     "test": "node --import tsx/esm --test \"tests/*.spec.ts\"",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:build": "node --test \"tests/*.test.mjs\"",
-    "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run test:build"
+    "test:release": "python3 -m unittest discover -s tests/release -p 'test_*.py'",
+    "pack-smoke": "node tools/pack-smoke.mjs",
+    "check": "pnpm run typecheck && pnpm test && pnpm run build && pnpm run test:build && pnpm run test:release && pnpm run pack-smoke",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run typecheck && pnpm test && pnpm run test:release"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.0",
-    "@deepseek-ai/dsh-credentials": "*",
-    "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-llm-pi-ai": "*",
-    "@deepseek-ai/dsh-settings": "*",
-    "@deepseek-ai/schemastery": "^3.18.0"
-  },
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.85.1"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/dsh-credentials-local": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/dsh-settings": ">=0.1.5-rc.1 <0.1.6",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@earendil-works/pi-ai": "^0.85.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-credentials": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-credentials-local": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@earendil-works/pi-ai": "0.85.1",
     "@types/node": "22.20.0",
-    "@deepseek-ai/cordis": "link:.harness/vendor/cordis",
-    "@deepseek-ai/dsh-credentials": "link:.harness/packages/credentials/credentials",
-    "@deepseek-ai/dsh-credentials-local": "link:.harness/packages/credentials/credentials-local",
-    "@deepseek-ai/dsh-llm": "link:.harness/packages/llm/llm",
-    "@deepseek-ai/dsh-llm-pi-ai": "link:.harness/packages/llm/llm-pi-ai",
-    "@deepseek-ai/dsh-settings": "link:.harness/packages/settings/settings",
-    "@deepseek-ai/schemastery": "link:.harness/vendor/schemastery",
     "tsx": "4.22.4",
     "typescript": "6.0.3"
   }

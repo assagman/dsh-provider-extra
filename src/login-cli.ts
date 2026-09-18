@@ -1,10 +1,15 @@
+#!/usr/bin/env node
 /**
- * Sign the Codex subscription route in: pnpm codex:login [--credentials-path <file>].
+ * Sign the Codex subscription route in: dsh-provider-extra-login [--credentials-path <file>].
+ *
+ * Ships as the package bin rather than a checkout script because the grant has
+ * to be obtainable from an installed package: a registry install has no
+ * repository to run tooling from, and a sign-in is attended anyway, so the
+ * installed package must carry the entry point that reaches it.
  *
  * Runs pi-ai's own Codex OAuth login (browser or device-code, chosen at the
  * prompt) against the harness credentials document the server reads, so the
- * grant is live for the next request with no restart. Attended by design: a
- * human must open the URL and approve.
+ * grant is live for the next request with no restart.
  *
  * The document defaults exactly as the server's credentials-local does
  * (<harness home>/.credentials.yaml); pass --credentials-path only when the
@@ -17,9 +22,9 @@ import { createInterface } from 'node:readline/promises'
 import { Context } from '@deepseek-ai/cordis'
 import LocalCredentialProvider, { resolveSpec } from '@deepseek-ai/dsh-credentials-local'
 import { createModels } from '@earendil-works/pi-ai'
-import { catalogCodex, codexAuth } from '../src/codex.ts'
-import type { CodexCredentialService } from '../src/codex.ts'
-import { readlineTerminal, runCodexLogin } from '../src/codex-login.ts'
+import { catalogCodex, codexAuth } from './codex.ts'
+import type { CodexCredentialService } from './codex.ts'
+import { readlineTerminal, runCodexLogin } from './codex-login.ts'
 
 /** Flag naming an explicit credentials document. */
 const PATH_FLAG = '--credentials-path'

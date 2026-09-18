@@ -148,3 +148,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Python bytecode from the release guard suite
+__pycache__/

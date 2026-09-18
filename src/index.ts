@@ -8,16 +8,20 @@
  * in the harness credential store (see src/codex-login.ts for the sign-in),
  * because no shipped surface consumes DSH core's own Codex authorization flow.
  *
- * Mounting (cordis.yml):
+ * Registration is the profile's job: `dsh plugin add` installs the package and
+ * its bundle patch mounts this module, so no path is ever written down.
+ *
+ *     dsh plugin --profile web add @sagmans/dsh-provider-extra
+ *
+ * An ID-targeted override changes the config after that:
  *
  *     - id: dsh-provider-extra
- *       name: '/absolute/path/to/dsh-provider-extra/dist/index.js'
  *       config:
  *         apiKeyEnv: OPENCODE_API_KEY
  *         # routeId: opencode-go        # default; keep it out of llm-pi-ai providers
  *         # baseURL: https://opencode.ai/zen/go/v1
  *         # fallbackSessionId: dsh-provider-extra
- *         # codexEnabled: true          # sign in with: pnpm codex:login
+ *         # codexEnabled: true          # sign in with: dsh-provider-extra-login
  *         # codexRouteId: openai-codex  # default; keep it out of llm-pi-ai providers
  *
  * @module dsh-provider-extra

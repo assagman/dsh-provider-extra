@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 
-const PACKAGE_NAME = 'dsh-provider-extra'
+const PACKAGE_NAME = '@sagmans/dsh-provider-extra'
 const GO_ROUTE = 'opencode-go'
 const CODEX_ROUTE = 'openai-codex'
 const EXTRA_MODEL = 'deepseek-flash'

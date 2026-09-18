@@ -4,9 +4,9 @@
  * This is the other half of the seam DSH core leaves unconnected: it drives
  * pi-ai's own Codex OAuth login (browser or device-code, chosen at the
  * prompt) against the harness credential store, so the grant lands in the
- * same record the route reads. It runs as a standalone script
- * (scripts/codex-login.ts), not inside the server, because a sign-in is an
- * attended one-off: it needs a human watching for the URL and code.
+ * same record the route reads. It runs as the package bin (src/login-cli.ts),
+ * not inside the server, because a sign-in is an attended one-off: it needs a
+ * human watching for the URL and code.
  *
  * @module dsh-provider-extra/codex-login
  */

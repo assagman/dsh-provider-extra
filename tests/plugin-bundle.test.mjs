@@ -6,12 +6,17 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-const PACKAGE_NAME = 'dsh-provider-extra'
+const PACKAGE_NAME = '@sagmans/dsh-provider-extra'
+const CLI_PACKAGE = '@deepseek-ai/dsh'
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
-const CLI = fileURLToPath(new URL('../.harness/apps/cli/lib/bin.js', import.meta.url))
+// The profile mechanics under test belong to the CLI that ships to users, so
+// the suite drives the registry build rather than a source checkout; the bin
+// path comes from that package's own manifest instead of a guessed layout.
+const CLI_MANIFEST = JSON.parse(readFileSync(join(ROOT, 'node_modules', CLI_PACKAGE, 'package.json'), 'utf8'))
+const CLI = join(ROOT, 'node_modules', CLI_PACKAGE, CLI_MANIFEST.bin.dsh)
 const PROFILES = ['web', 'tui']
 const TIMEOUT_MS = 30_000
-const PLUGIN_ROW = /^\s*-?\s*name:\s*['"]?dsh-provider-extra['"]?\s*$/gm
+const PLUGIN_ROW = /^\s*-?\s*name:\s*['"]?@sagmans\/dsh-provider-extra['"]?\s*$/gm
 const OVERRIDE = '- id: dsh-provider-extra\n  config:\n    routeId: bundle-test-route\n'
 
 for (const profile of PROFILES) {

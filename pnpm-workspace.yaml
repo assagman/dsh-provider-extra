@@ -1,10 +1,16 @@
-# Keep linked harness packages on one checkout rather than mixing registry builds.
 packages: []
-autoInstallPeers: false
+# The harness packages this plugin consumes are registry peers, so they and the
+# peers of those peers must resolve here; without this every harness import in
+# the tests would resolve to nothing.
+autoInstallPeers: true
 minimumReleaseAge: 10080
 allowBuilds:
-  # Transitive dependencies of the pinned @earendil-works/pi-ai; esbuild's
-  # binary is required by tsx at runtime.
+  # Build steps the pinned toolchain needs: esbuild's binary is required by tsx,
+  # and the profile tests drive @deepseek-ai/dsh, which loads a subprocess
+  # backend, a native pty, and FFI.
+  '@deepseek-ai/dsh-subprocess-local': true
   '@google/genai': true
   esbuild: true
+  koffi: true
+  node-pty: true
   protobufjs: true
