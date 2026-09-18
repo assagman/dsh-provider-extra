@@ -111,15 +111,32 @@ export function terminalInteraction(terminal: LoginTerminal): AuthInteraction {
  * Run the Codex OAuth login to completion against an already-built Models
  * collection. The collection carries the harness-backed store, so pi-ai
  * persists the grant itself; this function only conducts the conversation.
- * Secrets stay out of output: success names the provider, never the tokens.
+ *
+ * The interaction is a parameter rather than a terminal because the attended
+ * sign-in has two hosts: the package bin with a human at a prompt, and the
+ * server-side command handler, which announces the page and then waits without
+ * any terminal at all.
+ *
+ * @param models - collection holding the catalog Codex provider and the harness store.
+ * @param provider - the catalog Codex provider object to sign in with.
+ * @param interaction - pi-ai callbacks for this attempt.
+ */
+export async function startCodexLogin(models: LoginModels, provider: unknown, interaction: AuthInteraction): Promise<void> {
+  models.setProvider(provider)
+  await models.login(CODEX_CATALOG_ID, OAUTH_TYPE, interaction)
+}
+
+/**
+ * Conduct the terminal sign-in: the same attempt, driven by readline, plus one
+ * closing line. Secrets stay out of output: success names the provider, never
+ * the tokens.
  *
  * @param models - collection holding the catalog Codex provider and the harness store.
  * @param provider - the catalog Codex provider object to sign in with.
  * @param terminal - line I/O for the human attending the sign-in.
  */
 export async function runCodexLogin(models: LoginModels, provider: unknown, terminal: LoginTerminal): Promise<void> {
-  models.setProvider(provider)
-  await models.login(CODEX_CATALOG_ID, OAUTH_TYPE, terminalInteraction(terminal))
+  await startCodexLogin(models, provider, terminalInteraction(terminal))
   terminal.print('Signed in to OpenAI Codex. The subscription grant is stored; the route serves it with no restart.')
 }
 

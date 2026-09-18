@@ -56,7 +56,7 @@ Rebuild with `pnpm run build` after source changes, then restart the affected pr
 
 ### Optional profile overrides
 
-Defaults use the `opencode-go` and `openai-codex` routes, `OPENCODE_API_KEY`, and the fallback session ID `dsh-provider-extra`.
+Defaults use the `opencode-go` and `openai-codex` routes, `OPENCODE_API_KEY`, the sign-in command `dsh-provider-extra-login`, and the fallback session ID `dsh-provider-extra`.
 
 To customize them, add an ID-targeted override to `$DSH_HOME/profiles/web/cordis.patch.yml`, `$DSH_HOME/profiles/tui/cordis.patch.yml`, or both. `DSH_HOME` defaults to `~/.dsh`.
 
@@ -67,6 +67,8 @@ To customize them, add an ID-targeted override to `$DSH_HOME/profiles/web/cordis
     routeId: opencode-go-session
     displayName: OpenCode Go (session)
     # codexEnabled: false
+    # loginCommandEnabled: false
+    # loginCommandName: dsh-provider-extra-login
 ```
 
 Preserve unrelated profile entries. Do not add a manual `insert` or `name`: the bundle owns plugin activation. Overrides can remain after removal without keeping the plugin active.
@@ -105,12 +107,23 @@ Each entry clones wire behavior from its template. Later entries win by ID. A ca
 
 ## Codex sign-in
 
-Run the attended login with the same `DSH_HOME` as your harness. An installed package ships the entry point:
+Sign in from the profile you are already using: the plugin registers a command in the harness command palette.
+
+```text
+/dsh-provider-extra-login            # browser login (the callback listens on localhost:1455)
+/dsh-provider-extra-login device     # device code, for a headless or remote host
+/dsh-provider-extra-login status     # current attempt, or the stored grant
+/dsh-provider-extra-login renew      # replace a stored grant
+```
+
+The command runs inside the server, so the grant lands in the credential store the route reads, and the route serves it on the next request with no restart. It prints the page or device code, then keeps the attempt in the background: the command returns before the human finishes, and `status` reports the outcome. Runs only in profiles that compose the command registry; set `loginCommandEnabled: false` to omit it.
+
+Without a command palette — a headless composition, or a sign-in for a server you are not attached to — use the shipped bin instead, with the same `DSH_HOME` as the harness. It needs a profile that has booted at least once, because that is what installs the tree the bin resolves the harness packages through:
 
 ```sh
-dsh-provider-extra-login
+"$DSH_HOME/profiles/web/node_modules/.bin/dsh-provider-extra-login"
 # If the server uses a non-default credentials file:
-dsh-provider-extra-login --credentials-path /absolute/path/to/.credentials.yaml
+"$DSH_HOME/profiles/web/node_modules/.bin/dsh-provider-extra-login" --credentials-path /absolute/path/to/.credentials.yaml
 ```
 
 From a source checkout, `pnpm codex:login` runs the same entry point through the TypeScript loader.
