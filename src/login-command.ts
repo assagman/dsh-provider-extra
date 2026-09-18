@@ -1,274 +1,442 @@
 /**
- * Slash-command sign-in for the Codex subscription route.
+ * Provider sign-in from the command palette.
  *
- * A registry install cannot name the package bin's path, and the tree that bin
- * resolves the harness packages through only exists after a profile boot, so
- * the attended login also belongs where the human already is: the command
- * palette. This handler runs inside the server, so the grant lands in the very
- * credential service the route reads and no module resolution crosses a
- * process boundary.
+ * The command palette is the only surface a registry install reliably has — a
+ * package bin is not on PATH and the tree it resolves through only exists
+ * after a boot — so the attended sign-in lives where the human already is. It
+ * is deliberately provider-agnostic: the host hands it every installed
+ * provider that ships an interactive login, and the command runs whichever
+ * one the human picks through pi-ai's own flow, so a new provider in the
+ * catalog needs no change here.
  *
- * pi-ai's OAuth announces its URL or device code before it waits for the
- * human, while a command result renders only once the handler settles. The
- * handler therefore answers with the first credential-bearing event and lets
- * the attempt continue in the background; invoking the command again reports
- * that same attempt instead of starting a second one.
+ * A sign-in is a conversation, and a command result renders only once the
+ * handler settles. The conversation therefore runs through the session UI's
+ * question channel: the provider picker, every flow prompt, and the page or
+ * device code are asked as questions, and the handler answers with the final
+ * verdict only after the credential is stored and observed.
  *
  * @module dsh-provider-extra/login-command
  */
 
 import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai'
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import { renderEvent } from './codex-login.ts'
 
 /** Command name a profile gets unless it renames the command. */
 export const DEFAULT_LOGIN_COMMAND_NAME = 'dsh-provider-extra-login'
 
-/** Input word selecting the headless device-code flow. */
-const DEVICE_WORD = 'device'
-
-/** Input word selecting the browser flow. */
-const BROWSER_WORD = 'browser'
-
-/** Input word asking about the current attempt instead of starting one. */
+/** Input word showing what is already stored instead of starting a sign-in. */
 const STATUS_WORD = 'status'
 
-/** Input word starting a replacement attempt even when a grant is stored. */
-const RENEW_WORD = 'renew'
+/** Input word selecting the API-key method when a provider offers both. */
+const KEY_WORD = 'key'
 
-/** pi-ai's login-method ids; a select answers with the id, never a position. */
-const PI_DEVICE_METHOD = 'device_code'
-const PI_BROWSER_METHOD = 'browser'
+/** Input word selecting the subscription method when a provider offers both. */
+const OAUTH_WORD = 'oauth'
 
-/** How long a handler waits for the flow's first user-facing event. */
-const FIRST_EVENT_TIMEOUT_MS = 20_000
+/** Question ids belong to the caller; the answer echoes them back. */
+const PICKER_QUESTION_ID = 'provider'
+const NOTICE_QUESTION_ID = 'notice'
+const PROMPT_QUESTION_ID = 'prompt'
+
+/** Answer labels this command owns, so a decision is never read as typed text. */
+const DONE_LABEL = 'Done'
+const CANCEL_LABEL = 'Cancel'
+
+/**
+ * Caveat rendered with a secret prompt. The answer returns to this handler
+ * and never enters the model's context, but a session UI can only show what
+ * the human types: saying so is the difference between a choice and a trap.
+ */
+const SECRET_DETAIL = 'The value goes to this command only and is never sent to the model.'
+
+/** Guidance added to a page or device-code question, where waiting is the task. */
+const WAIT_DETAIL = 'Finish on that page, then choose Done. The sign-in completes by itself.'
 
 /** Upper bound on one attended attempt, longer than any device code lives. */
 const ATTEMPT_DEADLINE_MS = 15 * 60_000
 
-/** What the handler needs from its plugin: an attempt runner and its lifetime. */
+/** pi-ai's auth type ids: a subscription login, or a stored API key. */
+export type LoginAuthType = 'oauth' | 'api_key'
+
+/** One provider-and-method pair as the picker shows it. */
+export interface LoginChoice {
+  /** pi-ai catalog id, echoed back when the flow runs. */
+  providerId: string
+  /** Provider name a human recognizes. */
+  providerName: string
+  /** Which method this choice runs. */
+  authType: LoginAuthType
+  /** Method label, e.g. "Sign in with ChatGPT" or "Anthropic API key". */
+  methodLabel: string
+}
+
+/** What the command needs from its plugin. */
 export interface LoginCommandHost {
-  /** Conduct one OAuth attempt against the credential store the route reads. */
-  login(interaction: AuthInteraction): Promise<void>
-  /** Whether a grant is already stored, for a status answer outside an attempt. */
-  hasGrant(): Promise<boolean>
-  /** Tie one attempt's abort to the host lifetime, so unload cancels it. */
-  track(abort: () => void): void
+  /** Every provider in this composition that offers an interactive sign-in. */
+  choices(): readonly LoginChoice[]
+  /** Run one sign-in to completion; the credential commit happens inside. */
+  login(choice: LoginChoice, interaction: AuthInteraction): Promise<void>
+  /** The stored credential kind for one provider, absent when nothing is stored. */
+  stored(providerId: string): Promise<LoginAuthType | undefined>
+  /** Ask the session UI, a surface that may be missing in headless compositions. */
+  ask(request: {
+    agent: CommandInvocation['agent']
+    questions: AskUserQuestionItem[]
+    signal?: AbortSignal
+  }): Promise<AskUserQuestionAnswer>
 }
 
-/** How one attempt ended, absent while it is still waiting for the human. */
-type AttemptOutcome =
-  | { readonly kind: 'signed-in' }
-  | { readonly kind: 'failed'; readonly message: string }
-
-/** One in-flight or settled sign-in attempt. */
-interface Attempt {
-  /** pi-ai login method this attempt answers the flow select with. */
-  readonly method: string
-  /** Rendered events so far, kept so a repeat invocation can show them again. */
-  readonly lines: string[]
-  /** Aborts this attempt alone; never the dispatching command request. */
-  readonly abort: AbortController
-  /** Settles with the first credential-bearing announcement, or without one. */
-  readonly announced: Promise<string | undefined>
-  /** Set once the attempt settles; absent while the human still can finish. */
-  outcome: AttemptOutcome | undefined
+/** Split raw command input into lowercase words. */
+function words(rawInput: string): string[] {
+  return rawInput.trim().toLowerCase().split(/\s+/u).filter(word => word.length > 0)
 }
 
-/** A promise plus the only resolver that can settle it. */
-interface Deferred<T> {
-  readonly promise: Promise<T>
-  resolve(value: T): void
+/** The option label for one choice; method labels disambiguate dual-auth providers. */
+function optionLabels(choices: readonly LoginChoice[]): string[] {
+  const perProvider = new Map<string, number>()
+  for (const choice of choices) {
+    perProvider.set(choice.providerId, (perProvider.get(choice.providerId) ?? 0) + 1)
+  }
+  return choices.map(choice => (perProvider.get(choice.providerId) ?? 0) > 1
+    ? choice.providerName + ' (' + choice.methodLabel + ')'
+    : choice.providerName)
 }
 
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((settle) => { resolve = settle })
-  return { promise, resolve }
+/** The question the picker asks, one option per provider-method pair. */
+function pickerQuestion(choices: readonly LoginChoice[]): AskUserQuestionItem {
+  const labels = optionLabels(choices)
+  return {
+    id: PICKER_QUESTION_ID,
+    header: 'Sign in',
+    question: 'Which provider do you want to sign in to?',
+    options: choices.map((choice, index) => ({
+      label: labels[index] ?? choice.providerName,
+      description: choice.methodLabel + ' · ' + choice.providerId,
+    })),
+  }
 }
 
-/** Render the events captured so far, or a starting line when none arrived. */
-function describeAttempt(attempt: Attempt, commandName: string): string {
-  const method = attempt.method === PI_DEVICE_METHOD ? DEVICE_WORD : BROWSER_WORD
-  const lines = attempt.lines.length > 0 ? attempt.lines : ['Waiting for the sign-in page…']
-  return [
-    'OpenAI Codex sign-in (' + method + '):',
-    ...lines,
-    'Run /' + commandName + ' ' + STATUS_WORD + ' to check it.',
-  ].join('\n')
+/** The free text a single-question answer carries, if any. */
+function answerText(answer: AskUserQuestionAnswer, questionId: string): string | undefined {
+  const item = answer.answers.find(entry => entry.id === questionId)
+  const custom = item?.custom?.trim()
+  return custom === undefined || custom.length === 0 ? undefined : custom
 }
 
-/** The credential-bearing announcement as it is shown to the human. */
-function announceAttempt(attempt: Attempt): string {
-  return attempt.lines.join('\n')
+/** The option labels a single-question answer carries. */
+function answerLabels(answer: AskUserQuestionAnswer, questionId: string): string[] {
+  return answer.answers.find(entry => entry.id === questionId)?.selected ?? []
 }
 
 /**
- * Answer one pi-ai prompt without a terminal.
- *
- * The flow select resolves to the requested method by id. The browser flow's
- * manual-code prompt exists only to race the local callback server: pi-ai
- * aborts it when the callback wins, so rejecting on that abort continues the
- * sign-in, and a code typed elsewhere is never required. Any other prompt is a
- * grammar this command cannot serve, and saying so beats hanging.
+ * Resolve what the picker's answer names: a label first, then free text as a
+ * provider id or a method word, so a capable UI that offers "Other" lands on
+ * the same choice as the menu.
  */
-function answerPrompt(prompt: AuthPrompt, method: string, signal: AbortSignal): Promise<string> {
-  switch (prompt.type) {
-    case 'select': {
-      const option = prompt.options.find(candidate => candidate.id === method)
-      if (option === undefined) {
-        return Promise.reject(new Error('dsh-provider-extra: the installed pi-ai catalog no longer offers the "' + method + '" login method'))
-      }
-      return Promise.resolve(option.id)
-    }
-    case 'manual_code': {
-      return new Promise<string>((_, reject) => {
-        const lost = (): void => {
-          reject(new Error('dsh-provider-extra: the browser callback did not finish the sign-in;'
-            + ' retry with "' + DEVICE_WORD + '" on a headless host'))
-        }
-        if (prompt.signal?.aborted === true || signal.aborted) {
-          lost()
-          return
-        }
-        prompt.signal?.addEventListener('abort', lost, { once: true })
-        signal.addEventListener('abort', lost, { once: true })
-      })
-    }
-    default: {
-      return Promise.reject(new Error('dsh-provider-extra: the codex sign-in asked for "' + prompt.type
-        + '" input, which a command cannot supply; retry with "' + DEVICE_WORD + '"'))
-    }
+function resolveChoice(
+  choices: readonly LoginChoice[],
+  answer: AskUserQuestionAnswer,
+): LoginChoice | undefined {
+  const labels = optionLabels(choices)
+  for (const label of answerLabels(answer, PICKER_QUESTION_ID)) {
+    const index = labels.indexOf(label)
+    if (index >= 0) return choices[index]
   }
+  const text = answerText(answer, PICKER_QUESTION_ID)
+  if (text === undefined) return undefined
+  const named = choices.filter(choice => choice.providerId === text.toLowerCase())
+  if (named.length === 1) return named[0]
+  const method = text.toLowerCase().split(/\s+/u)[1] ?? text.toLowerCase()
+  return named.find(choice => choice.authType === (method === KEY_WORD ? 'api_key' : 'oauth'))
+    ?? choices.find(choice => choice.authType === (method === KEY_WORD ? 'api_key' : 'oauth'))
 }
 
-/** Start one attempt and keep its settlement on the attempt object. */
-function startAttempt(host: LoginCommandHost, method: string): Attempt {
-  const abort = new AbortController()
-  const announced = deferred<string | undefined>()
-  const attempt: Attempt = { method, lines: [], abort, announced: announced.promise, outcome: undefined }
-  const settle = (outcome: AttemptOutcome): void => {
-    attempt.outcome = outcome
-    announced.resolve(undefined)
-  }
-  const deadline = setTimeout(() => { abort.abort() }, ATTEMPT_DEADLINE_MS)
-  // The dispatching request's own signal is deliberately not used: it settles
-  // when the handler returns, which is exactly when the attempt must keep
-  // going. The plugin lifetime owns cancellation instead.
-  host.track(() => {
-    clearTimeout(deadline)
-    abort.abort()
-  })
-  const interaction: AuthInteraction = {
-    signal: abort.signal,
-    notify: (event: AuthEvent) => {
-      attempt.lines.push(...renderEvent(event))
-      if (event.type === 'device_code' || event.type === 'auth_url') {
-        announced.resolve(announceAttempt(attempt))
-      }
-    },
-    prompt: (prompt: AuthPrompt) => answerPrompt(prompt, method, abort.signal),
-  }
-  void host.login(interaction).then(
-    () => {
-      clearTimeout(deadline)
-      settle({ kind: 'signed-in' })
-    },
-    (error: unknown) => {
-      clearTimeout(deadline)
-      const message = error instanceof Error ? error.message : String(error)
-      // The deadline abort is ours; naming it keeps a forgotten attempt from
-      // reading like a server refusal.
-      settle({
-        kind: 'failed',
-        message: abort.signal.aborted && !abort.signal.reason ? 'the attempt timed out' : message,
-      })
-    },
-  )
-  return attempt
+/** The choice a provider id (and optional method word) names. */
+function choiceByWords(choices: readonly LoginChoice[], input: readonly string[]): LoginChoice | undefined {
+  const providerId = input[0]
+  if (providerId === undefined) return undefined
+  const named = choices.filter(choice => choice.providerId === providerId)
+  if (named.length === 0) return undefined
+  const method = input[1]
+  if (method === undefined) return named[0]
+  const authType: LoginAuthType = method === KEY_WORD ? 'api_key' : 'oauth'
+  return named.find(choice => choice.authType === authType)
 }
 
-/** Wait for the first announcement, or report that none arrived in time. */
-async function announcedWithin(attempt: Attempt): Promise<string | undefined | 'timeout'> {
-  return await Promise.race([
-    attempt.announced,
-    new Promise<'timeout'>((resolve) => {
-      const timer = setTimeout(() => { resolve('timeout') }, FIRST_EVENT_TIMEOUT_MS)
-      timer.unref()
-    }),
-  ])
+/** What one question turn needs from the running attempt. */
+interface Attempt {
+  /** Aborts the whole sign-in, whether the human declined or the clock ran out. */
+  readonly abort: AbortController
+  /** Rendered notices so far, newest last. */
+  readonly notices: string[]
+  /** The question holding the page or device code open, while it is open. */
+  wait: { abort: AbortController; settled: Promise<void> } | undefined
+  /** Set when the human chose Cancel, so the failure reads as their decision. */
+  declined: boolean
+  /** Set when the deadline, not the human, ended the attempt. */
+  expired: boolean
+}
+
+/** Close the waiting question, if one is open, and let its ask settle. */
+async function closeWait(attempt: Attempt): Promise<void> {
+  const open = attempt.wait
+  attempt.wait = undefined
+  if (open === undefined) return
+  open.abort.abort()
+  await open.settled
 }
 
 /**
- * Build the command that signs the Codex route in.
+ * Hold the page or device code open as a question while the flow waits for the
+ * human. Answering Done needs no handling — the flow finishes on its own — so
+ * only Cancel is read, and the question is withdrawn the moment the flow ends.
+ */
+function openWait(host: LoginCommandHost, invocation: CommandInvocation, choice: LoginChoice, attempt: Attempt): void {
+  const abort = new AbortController()
+  const asked = host.ask({
+    agent: invocation.agent,
+    questions: [{
+      id: NOTICE_QUESTION_ID,
+      header: choice.providerName,
+      question: 'Finish signing in',
+      detail: [...attempt.notices, WAIT_DETAIL].join('\n'),
+      options: [{ label: DONE_LABEL }, { label: CANCEL_LABEL }],
+    }],
+    signal: abort.signal,
+  })
+  const settled = asked.then((answer) => {
+    if (answerLabels(answer, NOTICE_QUESTION_ID).includes(CANCEL_LABEL)) {
+      attempt.declined = true
+      attempt.abort.abort()
+    }
+  }, () => {
+    // A withdrawn question is the normal end of an attempt: the flow settled
+    // first, or the surface cannot ask. Either way the flow's own outcome rules.
+  })
+  attempt.wait = { abort, settled }
+}
+
+/** The question one pi-ai prompt becomes, so the human can answer it. */
+function promptQuestion(prompt: AuthPrompt, choice: LoginChoice): AskUserQuestionItem {
+  const header = choice.providerName
+  switch (prompt.type) {
+    case 'select':
+      return {
+        id: PROMPT_QUESTION_ID,
+        header,
+        question: prompt.message,
+        options: prompt.options.map(option => ({
+          label: option.label,
+          ...option.description === undefined ? {} : { description: option.description },
+        })),
+      }
+    case 'secret':
+      return {
+        id: PROMPT_QUESTION_ID,
+        header,
+        question: prompt.message,
+        detail: SECRET_DETAIL + (prompt.placeholder === undefined ? '' : ' ' + prompt.placeholder),
+      }
+    case 'manual_code':
+      return {
+        id: PROMPT_QUESTION_ID,
+        header,
+        question: prompt.message,
+        detail: 'Answer here only if the browser did not finish the sign-in.'
+          + (prompt.placeholder === undefined ? '' : ' ' + prompt.placeholder),
+      }
+    case 'text':
+      return {
+        id: PROMPT_QUESTION_ID,
+        header,
+        question: prompt.message,
+        ...prompt.placeholder === undefined ? {} : { detail: prompt.placeholder },
+      }
+  }
+}
+
+/** Answer one pi-ai prompt through the session UI. */
+async function askPrompt(
+  host: LoginCommandHost,
+  invocation: CommandInvocation,
+  prompt: AuthPrompt,
+  choice: LoginChoice,
+  attempt: Attempt,
+): Promise<string> {
+  const ask = host.ask({
+    agent: invocation.agent,
+    questions: [promptQuestion(prompt, choice)],
+    signal: attempt.abort.signal,
+  })
+  if (prompt.type === 'select') {
+    const options = prompt.options
+    const answer = await ask
+    for (const label of answerLabels(answer, PROMPT_QUESTION_ID)) {
+      const hit = options.find(option => option.label === label)
+      if (hit !== undefined) return hit.id
+    }
+    // A select answers with an option id, never a position: an answer that
+    // names neither is echoed back only when it is an id pi-ai offered.
+    const typed = answerText(answer, PROMPT_QUESTION_ID)
+    const byId = options.find(option => option.id === typed)
+    if (byId !== undefined) return byId.id
+    throw new Error('dsh-provider-extra: answer the sign-in question by choosing one of its options')
+  }
+  if (prompt.type === 'manual_code' && prompt.signal !== undefined) {
+    // The code is optional by design: pi-ai races this prompt against the
+    // browser callback and withdraws it when the callback wins. Waiting on
+    // the withdrawal instead of demanding a code keeps the callback able to
+    // finish the sign-in on its own.
+    const withdrawn = new Promise<never>((_, reject) => {
+      const lose = (): void => { reject(new Error('dsh-provider-extra: the browser completed the sign-in')) }
+      if (prompt.signal?.aborted === true) {
+        lose()
+        return
+      }
+      prompt.signal?.addEventListener('abort', lose, { once: true })
+    })
+    const answer = await Promise.race([ask, withdrawn])
+    const typed = answerText(answer, PROMPT_QUESTION_ID)
+    if (typed === undefined) throw new Error('dsh-provider-extra: no code was given')
+    return typed
+  }
+  const answer = await ask
+  const typed = answerText(answer, PROMPT_QUESTION_ID)
+  if (typed === undefined) throw new Error('dsh-provider-extra: the sign-in question was left unanswered')
+  return typed
+}
+
+/** The interaction one attempt hands to pi-ai's login. */
+function attemptInteraction(
+  host: LoginCommandHost,
+  invocation: CommandInvocation,
+  choice: LoginChoice,
+  attempt: Attempt,
+): AuthInteraction {
+  return {
+    signal: attempt.abort.signal,
+    notify: (event: AuthEvent) => {
+      attempt.notices.push(...renderEvent(event))
+      if (attempt.wait === undefined) openWait(host, invocation, choice, attempt)
+    },
+    prompt: async (prompt: AuthPrompt) => {
+      await closeWait(attempt)
+      return await askPrompt(host, invocation, prompt, choice, attempt)
+    },
+  }
+}
+
+/** Why one attempt ended without a credential, as the human should read it. */
+function describeFailure(error: unknown, attempt: Attempt, choice: LoginChoice): string {
+  if (attempt.declined) return 'The ' + choice.providerName + ' sign-in was cancelled.'
+  if (attempt.expired) return 'The ' + choice.providerName + ' sign-in timed out; start it again to get a fresh code.'
+  const message = error instanceof Error ? error.message : String(error)
+  return 'The ' + choice.providerName + ' sign-in failed: ' + message
+}
+
+/** Run one sign-in end to end: the conversation plus the stored-credential check. */
+async function runChoice(
+  host: LoginCommandHost,
+  invocation: CommandInvocation,
+  choice: LoginChoice,
+): Promise<CommandResult> {
+  const attempt: Attempt = { abort: new AbortController(), notices: [], wait: undefined, declined: false, expired: false }
+  const deadline = setTimeout(() => {
+    attempt.expired = true
+    attempt.abort.abort()
+  }, ATTEMPT_DEADLINE_MS)
+  if (typeof deadline === 'object') deadline.unref()
+  try {
+    await host.login(choice, attemptInteraction(host, invocation, choice, attempt))
+    await closeWait(attempt)
+    // pi-ai persists during login, so resolving is not yet proof: only a
+    // record read back is. A flow that resolves without one is a catalog bug
+    // the human must hear about rather than a silent no-op sign-in.
+    const stored = await host.stored(choice.providerId)
+    if (stored === undefined) {
+      return {
+        kind: 'error',
+        text: 'The ' + choice.providerName + ' sign-in reported success but stored no credential; nothing changed.',
+      }
+    }
+    return {
+      kind: 'success',
+      text: 'Signed in to ' + choice.providerName + ' (' + choice.methodLabel + ').'
+        + ' The credential is stored and the route reads it on its next request.',
+    }
+  } catch (error) {
+    return { kind: 'error', text: describeFailure(error, attempt, choice) }
+  } finally {
+    clearTimeout(deadline)
+    await closeWait(attempt)
+  }
+}
+
+/** Answer what is already stored, per provider. */
+async function statusOf(host: LoginCommandHost): Promise<CommandResult> {
+  const choices = host.choices()
+  if (choices.length === 0) {
+    return { kind: 'error', text: 'dsh-provider-extra: this composition mounts no provider with an interactive sign-in' }
+  }
+  const seen = new Set<string>()
+  const lines: string[] = []
+  for (const choice of choices) {
+    if (seen.has(choice.providerId)) continue
+    seen.add(choice.providerId)
+    const stored = await host.stored(choice.providerId)
+    lines.push('  ' + choice.providerName + ' — ' + (stored === undefined ? 'not signed in' : 'signed in (' + stored + ')'))
+  }
+  return { kind: 'success', text: ['Provider sign-in status:', ...lines].join('\n') }
+}
+
+/**
+ * Build the provider sign-in command.
  *
- * @param host - attempt runner, grant probe, and lifetime hook of the plugin.
+ * @param host - the composition's providers, its login runner, and the session UI.
  * @param commandName - registered name, without the leading slash.
  * @returns the registry definition, valid until the profile unloads it.
  */
 export function createLoginCommand(host: LoginCommandHost, commandName: string): CommandDefinition {
-  let attempt: Attempt | undefined
-
-  const usage = 'Usage: /' + commandName + ' [' + BROWSER_WORD + '|' + DEVICE_WORD + '|' + STATUS_WORD + '|' + RENEW_WORD + ']'
-
-  const statusOf = async (): Promise<CommandResult> => {
-    if (attempt !== undefined && attempt.outcome === undefined) {
-      return { kind: 'success', text: describeAttempt(attempt, commandName) }
-    }
-    if (attempt?.outcome?.kind === 'signed-in') {
-      return { kind: 'success', text: 'OpenAI Codex is signed in; the route reads the stored grant on its next request.' }
-    }
-    if (attempt?.outcome?.kind === 'failed') {
-      return { kind: 'error', text: 'The last OpenAI Codex sign-in failed: ' + attempt.outcome.message }
-    }
-    const stored = await host.hasGrant()
-    return {
-      kind: 'success',
-      text: stored
-        ? 'A Codex grant is stored. Run /' + commandName + ' ' + RENEW_WORD + ' to replace it.'
-        : 'No Codex sign-in is in progress and none is stored. Run /' + commandName + ' to start one.',
-    }
-  }
+  const usage = 'Usage: /' + commandName + ' [<provider-id> [' + OAUTH_WORD + '|' + KEY_WORD + '] | ' + STATUS_WORD + ']'
 
   return {
     name: commandName,
-    description: 'Sign in to the OpenAI Codex subscription route (browser or device code)',
-    input: { hint: BROWSER_WORD + ' or ' + DEVICE_WORD + ', ' + STATUS_WORD + ' to check, ' + RENEW_WORD + ' to replace' },
+    description: 'Sign in to a model provider (subscription or API key)',
+    input: { hint: 'no input picks a provider, ' + STATUS_WORD + ' lists what is signed in' },
+    // The input is a provider id in normal use, but this command is also the
+    // one place a human might paste a key: keep the session log out of it.
+    recordInput: false,
     handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
-      const words = invocation.rawInput.trim().toLowerCase().split(/\s+/u).filter(word => word.length > 0)
-      if (words.length === 1 && words[0] === STATUS_WORD) return await statusOf()
-      // A bare repeat after success must not silently start a second sign-in:
-      // replacing a stored grant is the explicit "renew" request.
-      const renew = words[0] === RENEW_WORD
-      const methodWord = (renew ? words[1] : words[0]) ?? ''
-      if ((renew ? words.length > 2 : words.length > 1)
-        || (methodWord !== '' && methodWord !== BROWSER_WORD && methodWord !== DEVICE_WORD)) {
-        return { kind: 'error', text: 'dsh-provider-extra: unknown sign-in request "' + invocation.rawInput.trim() + '". ' + usage }
+      const input = words(invocation.rawInput)
+      if (input.length === 1 && input[0] === STATUS_WORD) return await statusOf(host)
+      if (input.length > 2) return { kind: 'error', text: 'dsh-provider-extra: too many arguments. ' + usage }
+      const choices = host.choices()
+      if (choices.length === 0) {
+        return { kind: 'error', text: 'dsh-provider-extra: this composition mounts no provider with an interactive sign-in' }
       }
-      if (attempt !== undefined && attempt.outcome === undefined) {
-        return { kind: 'success', text: describeAttempt(attempt, commandName) }
-      }
-      if (attempt?.outcome?.kind === 'signed-in' && !renew) {
-        return {
-          kind: 'success',
-          text: 'OpenAI Codex is signed in; the route reads the stored grant on its next request.'
-            + ' Run /' + commandName + ' ' + RENEW_WORD + ' to replace the grant.',
+      let choice: LoginChoice | undefined
+      if (input.length === 0) {
+        try {
+          choice = resolveChoice(choices, await host.ask({
+            agent: invocation.agent,
+            questions: [pickerQuestion(choices)],
+            signal: invocation.signal,
+          }))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return { kind: 'error', text: 'dsh-provider-extra: no provider was picked (' + message + '). ' + usage }
+        }
+        if (choice === undefined) return { kind: 'error', text: 'dsh-provider-extra: no provider was picked. ' + usage }
+      } else {
+        choice = choiceByWords(choices, input)
+        if (choice === undefined) {
+          const known = [...new Set(choices.map(entry => entry.providerId))].join(', ')
+          return { kind: 'error', text: 'dsh-provider-extra: no sign-in named "' + input.join(' ') + '". Known providers: ' + known + '. ' + usage }
         }
       }
-      const method = methodWord === DEVICE_WORD ? PI_DEVICE_METHOD : PI_BROWSER_METHOD
-      attempt = startAttempt(host, method)
-      const announcement = await announcedWithin(attempt)
-      if (attempt.outcome?.kind === 'failed') {
-        return { kind: 'error', text: 'The OpenAI Codex sign-in failed: ' + attempt.outcome.message }
-      }
-      if (announcement === 'timeout') {
-        attempt.abort.abort()
-        return { kind: 'error', text: 'The OpenAI Codex sign-in announced no page within ' + String(FIRST_EVENT_TIMEOUT_MS / 1000) + 's. ' + usage }
-      }
-      if (announcement === undefined) {
-        return { kind: 'success', text: 'OpenAI Codex is signed in; the route reads the stored grant on its next request.' }
-      }
-      return { kind: 'success', text: announcement + '\nFinish in your browser; run /' + commandName + ' ' + STATUS_WORD + ' to check it.' }
+      return await runChoice(host, invocation, choice)
     },
   }
 }
