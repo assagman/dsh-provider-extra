@@ -66,7 +66,13 @@ def setup_github(target):
         "name": ruleset_name, "target": "tag", "enforcement": "active",
         "conditions": {"ref_name": {"include": [f"refs/tags/{tag}"], "exclude": []}},
         "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
-        "bypass_actors": [{"actor_id": ADMIN_ROLE_ID, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+        # A role-based bypass does not survive a change of repository owner: the
+        # control then blocks even the release owner, so the reviewer is named
+        # directly as well and the gate keeps admitting a human.
+        "bypass_actors": [
+            {"actor_id": ADMIN_ROLE_ID, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+            {"actor_id": reviewer_id, "actor_type": "User", "bypass_mode": "always"},
+        ],
     }
 
     def inspect():
