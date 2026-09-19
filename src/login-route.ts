@@ -18,6 +18,9 @@ const PI_AI_SETTINGS_NAMESPACE = 'llm-pi-ai'
 /** The dict whose keys are routes, matching that service's configuration shape. */
 const PROVIDERS_FIELD = 'providers'
 
+/** The entry field naming the credential reference a route resolves. */
+const API_KEY_ENV_FIELD = 'apiKeyEnv'
+
 /**
  * A catalog route needs no fields of its own: the installed catalog supplies
  * the endpoint, protocol, and models, and the credential is read from the store
@@ -39,6 +42,25 @@ function configuredProviders(value: unknown): Record<string, unknown> | undefine
   if (typeof value !== 'object' || value === null) return undefined
   const providers = (value as Record<string, unknown>)[PROVIDERS_FIELD]
   return typeof providers === 'object' && providers !== null ? providers as Record<string, unknown> : undefined
+}
+
+/**
+ * The credential reference one declared route resolves, when its entry names
+ * one. A route declared without the field authenticates from the credential
+ * store instead, so it has no reference for a caller to report — and a route
+ * whose reference is unset never falls back to a stored record, which is why
+ * the reference alone answers what that route will use.
+ *
+ * @param settings - the settings service, absent in a composition that mounts none.
+ * @param providerId - the pi-ai catalog provider whose route entry to read.
+ * @returns the reference name, or nothing when the route names none.
+ */
+export function declaredCredentialRef(settings: SettingsLike | undefined, providerId: string): string | undefined {
+  if (settings === undefined) return undefined
+  const entry = configuredProviders(settings.get(PI_AI_SETTINGS_NAMESPACE))?.[providerId]
+  if (typeof entry !== 'object' || entry === null) return undefined
+  const ref = (entry as Record<string, unknown>)[API_KEY_ENV_FIELD]
+  return typeof ref === 'string' && ref.length > 0 ? ref : undefined
 }
 
 /**

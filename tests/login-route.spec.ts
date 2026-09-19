@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { declareProviderRoute } from '../src/login-route.ts'
+import { declareProviderRoute, declaredCredentialRef } from '../src/login-route.ts'
 import type { SettingsLike } from '../src/login-route.ts'
 
 /** A settings service over one fixed namespace value, recording every write. */
@@ -41,5 +41,22 @@ describe('declaring a provider route', () => {
     const { settings } = settingsOf(undefined)
     assert.equal(await declareProviderRoute(undefined, 'qwen-token-plan-individual'), 'unavailable')
     assert.equal(await declareProviderRoute(settings, 'qwen-token-plan-individual'), 'unavailable')
+  })
+})
+
+describe('reading a declared route credential', () => {
+  it('names the reference a configured route resolves', () => {
+    const { settings } = settingsOf({ providers: { 'kimi-coding': { apiKeyEnv: 'KIMI_CODING_API_KEY' } } })
+    assert.equal(declaredCredentialRef(settings, 'kimi-coding'), 'KIMI_CODING_API_KEY')
+  })
+
+  it('reports nothing for a route without a reference, a malformed one, or no settings at all', () => {
+    const { settings } = settingsOf({
+      providers: { 'qwen-token-plan-individual': {}, 'zai-coding-cn': { apiKeyEnv: 42 } },
+    })
+    assert.equal(declaredCredentialRef(settings, 'qwen-token-plan-individual'), undefined)
+    assert.equal(declaredCredentialRef(settings, 'zai-coding-cn'), undefined)
+    assert.equal(declaredCredentialRef(settings, 'absent'), undefined)
+    assert.equal(declaredCredentialRef(undefined, 'kimi-coding'), undefined)
   })
 })
