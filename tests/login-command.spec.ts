@@ -11,7 +11,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from '../src/login-command.ts'
-import type { DeclaredReference, LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-command.ts'
+import type { DeclaredReference, LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-contract.ts'
 import type { RouteDeclaration } from '../src/login-route.ts'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 

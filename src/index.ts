@@ -56,7 +56,7 @@ import {
 } from './codex.ts'
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
-import type { LoginChoice, LoginCommandHost } from './login-command.ts'
+import type { LoginChoice, LoginCommandHost } from './login-contract.ts'
 import { declareProviderRoute, declaredCredentialRef } from './login-route.ts'
 import { PendingCredentialStore, proveApiKey } from './login-verify.ts'
 
