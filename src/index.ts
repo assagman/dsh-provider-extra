@@ -31,6 +31,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { CredentialInfo } from '@deepseek-ai/dsh-credentials'
 import { LlmError, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-commands'
@@ -56,7 +57,7 @@ import {
 import type { CodexCredentialService, CodexRouteConfig } from './codex.ts'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from './login-command.ts'
 import type { LoginChoice, LoginCommandHost } from './login-command.ts'
-import { declareProviderRoute } from './login-route.ts'
+import { declareProviderRoute, declaredCredentialRef } from './login-route.ts'
 import { PendingCredentialStore, proveApiKey } from './login-verify.ts'
 
 /** Settings namespace configuration surfaces address this plugin's section by. */
@@ -109,9 +110,14 @@ const SectionSchema: Schema<ProviderExtraSection> = Schema.object({
   extraModels: Schema.array(extraModelSchema).default([]),
 })
 
-/** The credential seam when present; resolved per request, never at mount. */
-interface CredentialService {
+/**
+ * The credential seam when present; resolved per request, never at mount.
+ * Records and references are the two halves of the same service: a route
+ * authenticates from one or the other, never both at once.
+ */
+interface CredentialService extends CodexCredentialService {
   resolve(ref: string): Promise<{ value: string } | undefined>
+  describe(ref: string): Promise<CredentialInfo>
 }
 
 /**
@@ -304,6 +310,18 @@ export function apply(ctx: Context, config: Config): void {
           const record = await credentials.readRecord(recordKeyFor(providerId))
           if (record === undefined) return undefined
           return record.kind === 'api-key' ? 'api_key' : 'oauth'
+        },
+        reference: async (providerId) => {
+          // A route this plugin mounts names its reference in this plugin's
+          // config; every other route is whatever llm-pi-ai was configured
+          // with, which is the same document a sign-in declares into.
+          const ref = declaredCredentialRef(ctx.get('settings'), providerId)
+            ?? (providerId === route.provider ? route.apiKeyEnv : undefined)
+          if (ref === undefined || ref.length === 0) return undefined
+          const credentials = ctx.get('credentials') as CredentialService | undefined
+          if (credentials === undefined) return { ref }
+          const info = await credentials.describe(ref)
+          return { ref, ...info.configured && info.source !== undefined ? { source: info.source } : {} }
         },
         // Resolved per call, never at mount: a composition that mounts no
         // session UI still gets the command, and says so when it runs.

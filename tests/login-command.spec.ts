@@ -11,7 +11,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions'
 import { DEFAULT_LOGIN_COMMAND_NAME, createLoginCommand } from '../src/login-command.ts'
-import type { LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-command.ts'
+import type { DeclaredReference, LoginAuthType, LoginChoice, LoginCommandHost } from '../src/login-command.ts'
 import type { RouteDeclaration } from '../src/login-route.ts'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
 
@@ -109,6 +109,8 @@ function makeHost(ui: FakeUi, options: {
   choices?: readonly LoginChoice[]
   login?: (choice: LoginChoice, interaction: AuthInteraction) => Promise<void>
   stored?: Map<string, LoginAuthType>
+  /** Declared route references the composition resolves, for the status view. */
+  references?: Map<string, DeclaredReference>
   /** A flow that resolves without persisting is the case the command must catch. */
   persist?: boolean
   /** What the route declaration found, so each notice can be asserted. */
@@ -126,6 +128,7 @@ function makeHost(ui: FakeUi, options: {
       return options.route ?? 'present'
     },
     stored: async (providerId) => stored.get(providerId),
+    reference: async (providerId) => options.references?.get(providerId),
     ask: ui.ask,
   }
   return { host, logins, stored }
@@ -206,6 +209,28 @@ describe('provider sign-in command', () => {
     const text = result.kind === 'success' ? result.text ?? '' : ''
     assert.match(text, /ChatGPT \(Codex\) — signed in \(oauth\)/)
     assert.match(text, /Anthropic — not signed in/)
+  })
+
+  it('reports a declared route reference as what that provider authenticates with', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui, {
+      stored: new Map<string, LoginAuthType>([['openai-codex', 'oauth']]),
+      references: new Map<string, DeclaredReference>([['anthropic', { ref: 'ANTHROPIC_API_KEY', source: 'file' }]]),
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('status'))
+    const text = result.kind === 'success' ? result.text ?? '' : ''
+    assert.match(text, /Anthropic — API key ANTHROPIC_API_KEY \(set from file\)/)
+    assert.match(text, /ChatGPT \(Codex\) — signed in \(oauth\)/)
+  })
+
+  it('names a declared route reference nothing supplies, because that route cannot authenticate', async () => {
+    const ui = new FakeUi([])
+    const { host } = makeHost(ui, {
+      references: new Map<string, DeclaredReference>([['anthropic', { ref: 'ANTHROPIC_API_KEY' }]]),
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('status'))
+    const text = result.kind === 'success' ? result.text ?? '' : ''
+    assert.match(text, /Anthropic — API key ANTHROPIC_API_KEY \(not set\)/)
   })
 
   it('holds a device code open and withdraws the question when the flow settles', async () => {

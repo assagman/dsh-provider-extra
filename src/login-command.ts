@@ -91,6 +91,19 @@ export interface LoginChoice {
   methodLabel: string
 }
 
+/**
+ * One declared route's credential reference and whether anything supplies it.
+ * The reference decides its route on its own: llm-pi-ai resolves the named
+ * value before it ever reaches the credential store, so an unset reference
+ * beside a signed-in record is not what that route uses.
+ */
+export interface DeclaredReference {
+  /** Environment-reference name the route resolves, e.g. `KIMI_CODING_API_KEY`. */
+  ref: string
+  /** Credential layer currently supplying the value, absent while nothing does. */
+  source?: string
+}
+
 /** What the command needs from its plugin. */
 export interface LoginCommandHost {
   /** Every provider in this composition that offers an interactive sign-in. */
@@ -99,6 +112,12 @@ export interface LoginCommandHost {
   login(choice: LoginChoice, interaction: AuthInteraction): Promise<RouteDeclaration>
   /** The stored credential kind for one provider, absent when nothing is stored. */
   stored(providerId: string): Promise<LoginAuthType | undefined>
+  /**
+   * The credential reference one provider's declared route resolves, when it
+   * names one — configured or not, because a route whose reference is unset is
+   * the state that fails its next turn.
+   */
+  reference(providerId: string): Promise<DeclaredReference | undefined>
   /** Ask the session UI, a surface that may be missing in headless compositions. */
   ask(request: {
     agent: CommandInvocation['agent']
@@ -405,7 +424,18 @@ async function runChoice(
   }
 }
 
-/** Answer what is already stored, per provider. */
+/** How one provider authenticates right now, as the human should read it. */
+async function statusLine(host: LoginCommandHost, choice: LoginChoice): Promise<string> {
+  const reference = await host.reference(choice.providerId)
+  if (reference !== undefined) {
+    const where = reference.source === undefined ? 'not set' : 'set from ' + reference.source
+    return '  ' + choice.providerName + ' — API key ' + reference.ref + ' (' + where + ')'
+  }
+  const stored = await host.stored(choice.providerId)
+  return '  ' + choice.providerName + ' — ' + (stored === undefined ? 'not signed in' : 'signed in (' + stored + ')')
+}
+
+/** Answer how each provider authenticates today. */
 async function statusOf(host: LoginCommandHost): Promise<CommandResult> {
   const choices = host.choices()
   if (choices.length === 0) {
@@ -416,8 +446,7 @@ async function statusOf(host: LoginCommandHost): Promise<CommandResult> {
   for (const choice of choices) {
     if (seen.has(choice.providerId)) continue
     seen.add(choice.providerId)
-    const stored = await host.stored(choice.providerId)
-    lines.push('  ' + choice.providerName + ' — ' + (stored === undefined ? 'not signed in' : 'signed in (' + stored + ')'))
+    lines.push(await statusLine(host, choice))
   }
   return { kind: 'success', text: ['Provider sign-in status:', ...lines].join('\n') }
 }

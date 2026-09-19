@@ -113,7 +113,7 @@ Sign in from the profile you are already using: the plugin registers a command i
 /dsh-provider-extra-login                # pick a provider, then run its sign-in
 /dsh-provider-extra-login openai-codex   # skip the picker: that provider's subscription login
 /dsh-provider-extra-login anthropic key  # that provider's API-key entry
-/dsh-provider-extra-login status         # what is stored, provider by provider
+/dsh-provider-extra-login status         # how each provider authenticates today
 ```
 
 The command runs inside the server, so the credential lands in the store the routes read, and it serves the next request with no restart. A provider the profile never declared is declared in the `llm-pi-ai` settings as a bare catalog route, because a stored credential no route reads fails the first turn with `no adapter registered`; the write names one provider, so routes and overrides already configured are untouched, and the success message says when it happened. Subscription flows show the page or device code as a dialog question and then finish on their own; a provider that asks for an API key collects it in the same dialog and spends it on one minimal request before anything is written, so a key the provider refuses is reported and never stored, and the value stays out of the model's context either way. The command reports success only after reading the stored record back, so a flow that resolves without persisting is reported instead of passed off as a sign-in. Runs only in profiles that compose both the command registry and a session UI; set `loginCommandEnabled: false` to omit it.
