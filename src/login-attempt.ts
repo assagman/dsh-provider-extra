@@ -22,6 +22,17 @@ import { answerLabels, answerText } from './login-choice.ts'
 const PROMPT_QUESTION_ID = 'prompt'
 const NOTICE_QUESTION_ID = 'notice'
 
+/**
+ * Question id suffix declaring that the typed answer is a credential. The
+ * question seam has no field for it, so the id carries the declaration: it is
+ * the one caller-owned token that reaches a surface unchanged, and a surface
+ * that knows the suffix hides the value instead of guessing from the wording.
+ */
+const SECRET_ID_SUFFIX = ':secret'
+
+/** The id a secret prompt answers to, so its answer is never shown. */
+const SECRET_PROMPT_QUESTION_ID = PROMPT_QUESTION_ID + SECRET_ID_SUFFIX
+
 /** Answer labels this command owns, so a decision is never read as typed text. */
 const DONE_LABEL = 'Done'
 const CANCEL_LABEL = 'Cancel'
@@ -126,7 +137,7 @@ function promptQuestion(prompt: AuthPrompt, choice: LoginChoice): AskUserQuestio
       }
     case 'secret':
       return {
-        id: PROMPT_QUESTION_ID,
+        id: SECRET_PROMPT_QUESTION_ID,
         header,
         question: prompt.message,
         detail: SECRET_DETAIL + (prompt.placeholder === undefined ? '' : ' ' + prompt.placeholder),
@@ -149,6 +160,11 @@ function promptQuestion(prompt: AuthPrompt, choice: LoginChoice): AskUserQuestio
   }
 }
 
+/** The id the answer to one prompt echoes back, which declares a secret as one. */
+function promptQuestionId(prompt: AuthPrompt): string {
+  return prompt.type === 'secret' ? SECRET_PROMPT_QUESTION_ID : PROMPT_QUESTION_ID
+}
+
 /** Answer one pi-ai prompt through the session UI. */
 async function askPrompt(
   host: LoginCommandHost,
@@ -157,6 +173,7 @@ async function askPrompt(
   choice: LoginChoice,
   attempt: Attempt,
 ): Promise<string> {
+  const questionId = promptQuestionId(prompt)
   const ask = host.ask({
     agent: invocation.agent,
     questions: [promptQuestion(prompt, choice)],
@@ -165,13 +182,13 @@ async function askPrompt(
   if (prompt.type === 'select') {
     const options = prompt.options
     const answer = await ask
-    for (const label of answerLabels(answer, PROMPT_QUESTION_ID)) {
+    for (const label of answerLabels(answer, questionId)) {
       const hit = options.find(option => option.label === label)
       if (hit !== undefined) return hit.id
     }
     // A select answers with an option id, never a position: an answer that
     // names neither is echoed back only when it is an id pi-ai offered.
-    const typed = answerText(answer, PROMPT_QUESTION_ID)
+    const typed = answerText(answer, questionId)
     const byId = options.find(option => option.id === typed)
     if (byId !== undefined) return byId.id
     throw new Error('dsh-provider-extra: answer the sign-in question by choosing one of its options')
@@ -190,12 +207,12 @@ async function askPrompt(
       prompt.signal?.addEventListener('abort', lose, { once: true })
     })
     const answer = await Promise.race([ask, withdrawn])
-    const typed = answerText(answer, PROMPT_QUESTION_ID)
+    const typed = answerText(answer, questionId)
     if (typed === undefined) throw new Error('dsh-provider-extra: no code was given')
     return typed
   }
   const answer = await ask
-  const typed = answerText(answer, PROMPT_QUESTION_ID)
+  const typed = answerText(answer, questionId)
   if (typed === undefined) throw new Error('dsh-provider-extra: the sign-in question was left unanswered')
   return typed
 }

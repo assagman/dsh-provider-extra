@@ -270,8 +270,8 @@ describe('provider sign-in command', () => {
     assert.deepEqual(answered, ['device_code'])
   })
 
-  it('returns typed text and keeps a secret out of the model context', async () => {
-    const ui = new FakeUi([types('prompt', 'sk-test-key')])
+  it('returns typed text and declares a secret by its question id', async () => {
+    const ui = new FakeUi([types('prompt:secret', 'sk-test-key')])
     const answered: string[] = []
     const { host } = makeHost(ui, {
       login: async (_choice, interaction) => {
@@ -281,7 +281,22 @@ describe('provider sign-in command', () => {
     const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('anthropic key'))
     assert.equal(result.kind, 'success', result.kind === 'error' ? result.text : '')
     assert.deepEqual(answered, ['sk-test-key'])
+    assert.equal(ui.questions[0]?.id, 'prompt:secret')
     assert.match(ui.questions[0]?.detail ?? '', /sent only to this provider/)
+  })
+
+  it('answers a plain prompt under the id that declares nothing', async () => {
+    const ui = new FakeUi([types('prompt', 'a value anyone may read')])
+    const answered: string[] = []
+    const { host } = makeHost(ui, {
+      login: async (_choice, interaction) => {
+        answered.push(await interaction.prompt({ type: 'text', message: 'Which workspace?' }))
+      },
+    })
+    const result = await createLoginCommand(host, DEFAULT_LOGIN_COMMAND_NAME).handler(invocation('anthropic key'))
+    assert.equal(result.kind, 'success', result.kind === 'error' ? result.text : '')
+    assert.deepEqual(answered, ['a value anyone may read'])
+    assert.equal(ui.questions[0]?.id, 'prompt')
   })
 
   it('lets a browser callback win the manual-code race', async () => {
